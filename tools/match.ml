@@ -93,7 +93,7 @@ let rec binops side {point; _} =
       match c, side with
       | Bnrl (o, c, r), `L -> ((o, c), r) :: res
       | Bnrr (o, l, c), `R -> ((o, c), l) :: res
-    | _ -> res)
+      | _ -> res)
     [] point
 
 let group_by_fst l =
@@ -114,11 +114,9 @@ let sort_uniq cmp l =
   List.fold_left (fun (eo, l) e' ->
       match eo with
       | None -> (Some e', l)
-      | Some e ->
-        if cmp e e' = 0
-        then (eo, l)
-        else (Some e', e :: l)
-    ) (None, []) |>
+      | Some e when cmp e e' = 0 -> (eo, l)
+      | Some e -> (Some e', e :: l))
+    (None, []) |>
   (function
     | (None, _) -> []
     | (Some e, l) -> List.rev (e :: l))
@@ -145,25 +143,24 @@ let nextbnr tmp s1 s2 =
 type p = string
 
 module StateSet : sig
-  type set
-  val create: unit -> set
-  val add: set -> p state ->
+  type t
+  val create: unit -> t
+  val add: t -> p state ->
            [> `Added | `Found ] * p state
-  val iter: set -> (p state -> unit) -> unit
-  val elems: set -> (p state) list
+  val iter: t -> (p state -> unit) -> unit
+  val elems: t -> (p state) list
 end = struct
-  include Hashtbl.Make(struct
+  open Hashtbl.Make(struct
     type t = p state
     let equal s1 s2 = s1.point = s2.point
     let hash s = Hashtbl.hash s.point
   end)
-  type set =
+  type nonrec t =
     { h: int t
     ; mutable next_id: int }
   let create () =
     { h = create 500; next_id = 1 }
   let add set s =
-    (* delete the check later *)
     assert (s.point = normalize s.point);
     try
       let id = find set.h s in
@@ -198,7 +195,6 @@ end)
 type rule =
   { name: string
   ; pattern: pattern
-  (* TODO access pattern *)
   }
 
 let generate_table rl =

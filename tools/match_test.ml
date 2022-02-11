@@ -61,10 +61,16 @@ let print_sm =
   StateMap.iter (fun k s' ->
     match k with
     | K (o, sl, sr) ->
+        let top =
+          List.fold_left (fun top c ->
+            match c with
+            | Top r -> top ^ " " ^ r
+            | _ -> top) "" s'.point
+        in
         Printf.printf
-          "(%s %d %d) -> %d\n"
+          "(%s %d %d) -> %d%s\n"
           (op_str o)
-          sl.id sr.id s'.id
+          sl.id sr.id s'.id top
   )
 
 let address_rules =
@@ -72,7 +78,7 @@ let address_rules =
   let om = Kl, Omul in
   let rule name pattern =
     List.mapi (fun i pattern ->
-        { name = Printf.sprintf "%s%d" name (i+1)
+        { name (* = Printf.sprintf "%s%d" name (i+1) *)
         ; pattern; })
       (ac_equiv pattern) in
 
