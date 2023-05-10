@@ -23,11 +23,32 @@ type pattern =
   | Atm of atomic_pattern
   | Var of string * atomic_pattern
 
+let show_op (k, o) =
+  (match o with
+   | Oadd -> "add"
+   | Osub -> "sub"
+   | Omul -> "mul") ^
+  (match k with
+   | Kw -> "w"
+   | Kl -> "l"
+   | Ks -> "s"
+   | Kd -> "d")
+
+let rec show_pattern p =
+  match p with
+  | Var _ -> failwith "variable not allowed"
+  | Atm Tmp -> "%"
+  | Atm AnyCon -> "$"
+  | Atm (Con n) -> Int64.to_string n
+  | Bnr (o, pl, pr) ->
+    "(" ^ show_op o ^
+    " " ^ show_pattern pl ^
+    " " ^ show_pattern pr ^ ")"
+
 let rec pattern_match p w =
   match p with
-  | Var _ ->
-    failwith "variable not allowed"
-  | Atm (Tmp) ->
+  | Var _ -> failwith "variable not allowed"
+  | Atm Tmp ->
       begin match w with
       | Atm (Con _ | AnyCon) -> false
       | _ -> true
@@ -89,12 +110,12 @@ type 'a state =
   ; point: ('a cursor) list }
 
 let rec binops side {point; _} =
-  List.fold_left (fun res c ->
+  List.filter_map (fun c ->
       match c, side with
-      | Bnrl (o, c, r), `L -> ((o, c), r) :: res
-      | Bnrr (o, l, c), `R -> ((o, c), l) :: res
-      | _ -> res)
-    [] point
+      | Bnrl (o, c, r), `L -> Some ((o, c), r)
+      | Bnrr (o, l, c), `R -> Some ((o, c), l)
+      | _ -> None)
+    point
 
 let group_by_fst l =
   List.fast_sort (fun (a, _) (b, _) ->
@@ -124,15 +145,14 @@ let sort_uniq cmp l =
 let normalize (point: ('a cursor) list) =
   sort_uniq compare point
 
-let nextbnr tmp s1 s2 =
+let next_binary tmp s1 s2 =
   let pm w (_, p) = pattern_match p w in
   let o1 = binops `L s1 |>
            List.filter (pm s2.seen) |>
-           List.map fst
-  and o2 = binops `R s2 |>
+           List.map fst in
+  let o2 = binops `R s2 |>
            List.filter (pm s1.seen) |>
-           List.map fst
-  in
+           List.map fst in
   List.map (fun (o, l) ->
     o,
     { id = 0
@@ -168,6 +188,8 @@ end = struct
     with Not_found -> begin
       let id = set.next_id in
       set.next_id <- id + 1;
+      Printf.printf "adding: %d [%s]\n"
+        id (show_pattern s.seen);
       add set.h s id;
       `Added, {s with id}
     end
@@ -201,10 +223,8 @@ let generate_table rl =
   let states = StateSet.create () in
   (* initialize states *)
   let ground =
-    List.fold_left
-      (fun ini r ->
-        peel r.pattern r.name @ ini)
-      [] rl |>
+    List.concat_map
+      (fun r -> peel r.pattern r.name) rl |>
     group_by_fst
   in
   let find x d l =
@@ -238,7 +258,7 @@ let generate_table rl =
     flag := `Stop;
     let statel = StateSet.elems states in
     iter_pairs statel (fun (sl, sr) ->
-      nextbnr tmp sl sr |>
+      next_binary tmp sl sr |>
       List.iter (fun (o, s') ->
         let flag', s' =
           StateSet.add states s' in
