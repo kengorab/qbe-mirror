@@ -63,7 +63,7 @@ let print_sm =
 let rules =
   let oa = Kl, Oadd in
   let om = Kl, Omul in
-  match `X64Addr with
+  match `Add3 with
   (* ------------------------------- *)
   | `X64Addr ->
     let rule name pattern =
@@ -81,17 +81,25 @@ let rules =
     rule "bos" (Bnr (oa, Bnr (oa, Atm AnyCon, Atm Tmp), Bnr (om, Atm (Con 4L), Atm Tmp)))
   (* ------------------------------- *)
   | `Add3 ->
+    let va = Var ("a", Tmp)
+    and vb = Var ("b", Tmp)
+    and vc = Var ("c", Tmp) in
     [ { name = "add"
-      ; pattern = Bnr (oa, Atm Tmp, Bnr (oa, Atm Tmp, Atm Tmp)) } ] @
+      ; pattern = Bnr (oa, va, Bnr (oa, vb, vc)) } ] @
     [ { name = "add"
-      ; pattern = Bnr (oa, Bnr (oa, Atm Tmp, Atm Tmp), Atm Tmp) } ] @
+      ; pattern = Bnr (oa, Bnr (oa, va, vb), vc) } ]
+(*    [ { name = "add"
+      ; pattern = Bnr (oa, va, Bnr (om, vb, vc)) } ] *)
+(*     [ { name = "add"
+      ; pattern = Bnr (oa, Bnr (oa, va, vb), vc) } ] @
     [ { name = "mul"
       ; pattern = Bnr (om, Bnr (oa, Bnr (oa, Atm Tmp, Atm Tmp),
                                     Atm Tmp),
                            Bnr (oa, Atm Tmp,
-                                    Bnr (oa, Atm Tmp, Atm Tmp))) } ]
+                                    Bnr (oa, Atm Tmp, Atm Tmp))) } ] *)
 
 
 let sl, sm = generate_table rules
-let s n = List.find (fun {id; _} -> id = n) sl
 let () = print_sm sm
+
+let _ = lr_matcher (invert_statemap (Array.length sl) sm) sl rules "add"

@@ -23,6 +23,10 @@ type pattern =
   | Atm of atomic_pattern
   | Var of string * atomic_pattern
 
+let is_atomic = function
+  | (Atm _ | Var _) -> true
+  | _ -> false
+
 let show_op (k, o) =
   (match o with
    | Oadd -> "add"
@@ -36,18 +40,20 @@ let show_op (k, o) =
 
 let rec show_pattern p =
   match p with
-  | Var _ -> failwith "variable not allowed"
   | Atm Tmp -> "%"
   | Atm AnyCon -> "$"
   | Atm (Con n) -> Int64.to_string n
+  | Var (v, p) ->
+      show_pattern (Atm p) ^ "'" ^ v
   | Bnr (o, pl, pr) ->
-    "(" ^ show_op o ^
-    " " ^ show_pattern pl ^
-    " " ^ show_pattern pr ^ ")"
+      "(" ^ show_op o ^
+      " " ^ show_pattern pl ^
+      " " ^ show_pattern pr ^ ")"
 
 let rec pattern_match p w =
   match p with
-  | Var _ -> failwith "variable not allowed"
+  | Var (_, p) ->
+      pattern_match (Atm p) w
   | Atm Tmp ->
       begin match w with
       | Atm (Con _ | AnyCon) -> false
@@ -79,7 +85,7 @@ let rec fold_cursor c p =
 let peel p x =
   let once out (p, c) =
     match p with
-    | Var _ -> failwith "variable not allowed"
+    | Var (_, p) -> (Atm p, c) :: out
     | Atm _ -> (p, c) :: out
     | Bnr (o, pl, pr) ->
         (pl, Bnrl (o, c, pr)) ::
@@ -88,7 +94,7 @@ let peel p x =
   let rec go l =
     let l' = List.fold_left once [] l in
     if List.length l' = List.length l
-    then l
+    then l'
     else go l'
   in go [(p, Top x)]
 
@@ -142,8 +148,11 @@ let sort_uniq cmp l =
     | (None, _) -> []
     | (Some e, l) -> List.rev (e :: l))
 
+let setify l =
+  sort_uniq compare l
+
 let normalize (point: ('a cursor) list) =
-  sort_uniq compare point
+  setify point
 
 let next_binary tmp s1 s2 =
   let pm w (_, p) = pattern_match p w in
@@ -179,7 +188,7 @@ end = struct
     { h: int t
     ; mutable next_id: int }
   let create () =
-    { h = create 500; next_id = 1 }
+    { h = create 500; next_id = 0 }
   let add set s =
     assert (s.point = normalize s.point);
     try
@@ -210,8 +219,8 @@ module StateMap = Map.Make(struct
   let compare ka kb =
     match ka, kb with
     | K (o, sl, sr), K (o', sl', sr') ->
-      compare (o, sl.id, sr.id)
-              (o', sl'.id, sr'.id)
+        compare (o, sl.id, sr.id)
+                (o', sl'.id, sr'.id)
 end)
 
 type rule =
@@ -266,7 +275,12 @@ let generate_table rl =
         map_add (K (o, sl, sr)) s';
     ));
   done;
-  (StateSet.elems states, !map)
+  let states =
+    StateSet.elems states |>
+    List.sort (fun s s' -> compare s.id s'.id) |>
+    Array.of_list
+  in
+  (states, !map)
 
 let intersperse x l =
   let rec go left right out =
@@ -275,15 +289,15 @@ let intersperse x l =
       out in
     match right with
     | x :: right' ->
-      go (x :: left) right' out
+        go (x :: left) right' out
     | [] -> out
   in go [] l []
 
 let rec permute = function
   | [] -> [[]]
   | x :: l ->
-    List.concat (List.map
-      (intersperse x) (permute l))
+      List.concat (List.map
+        (intersperse x) (permute l))
 
 (* build all binary trees with ordered
  * leaves l *)
@@ -292,12 +306,12 @@ let rec bins build l =
     match r with
     | [] -> out
     | x :: r' ->
-      go (l @ [x]) r'
-        (fold_pairs
-          (bins build l)
-          (bins build r)
-          out (fun (l, r) out ->
-                 build l r :: out))
+        go (l @ [x]) r'
+          (fold_pairs
+            (bins build l)
+            (bins build r)
+            out (fun (l, r) out ->
+                   build l r :: out))
   in
   match l with
   | [] -> []
@@ -308,40 +322,143 @@ let products l ini f =
   let rec go acc la = function
     | [] -> f (List.rev la) acc
     | xs :: l ->
-      List.fold_left (fun acc x ->
-          go acc (x :: la) l)
-        acc xs
+        List.fold_left (fun acc x ->
+            go acc (x :: la) l)
+          acc xs
   in go ini [] l
 
 (* combinatorial nuke... *)
 let rec ac_equiv =
   let rec alevel o = function
     | Bnr (o', l, r) when o' = o ->
-      alevel o l @ alevel o r
+        alevel o l @ alevel o r
     | x -> [x]
   in function
   | Bnr (o, _, _) as p
-  when associative o ->
-    products
-      (List.map ac_equiv (alevel o p)) []
-      (fun choice out ->
-        List.map
-          (bins (fun l r -> Bnr (o, l, r)))
-          (if commutative o
-            then permute choice
-            else [choice]) |>
-        List.concat |>
-        (fun l -> List.rev_append l out))
+    when associative o ->
+      products
+        (List.map ac_equiv (alevel o p)) []
+        (fun choice out ->
+          List.concat_map
+            (bins (fun l r -> Bnr (o, l, r)))
+            (if commutative o
+              then permute choice
+              else [choice]) @ out)
   | Bnr (o, l, r)
-  when commutative o ->
-    fold_pairs
-      (ac_equiv l) (ac_equiv r) []
-      (fun (l, r) out ->
-        Bnr (o, l, r) ::
-        Bnr (o, r, l) :: out)
+    when commutative o ->
+      fold_pairs
+        (ac_equiv l) (ac_equiv r) []
+        (fun (l, r) out ->
+          Bnr (o, l, r) ::
+          Bnr (o, r, l) :: out)
   | Bnr (o, l, r) ->
-    fold_pairs
-      (ac_equiv l) (ac_equiv r) []
-      (fun (l, r) out ->
-        Bnr (o, l, r) :: out)
+      fold_pairs
+        (ac_equiv l) (ac_equiv r) []
+        (fun (l, r) out ->
+          Bnr (o, l, r) :: out)
   | x -> [x]
+
+type action =
+  | Switch of (int * action) list
+  | Push of action
+  | Pop of action
+  | Set of string * action
+  | Done
+
+(* left-to-right matching of a set of patterns;
+ * may raise if there is no lr matcher for the
+ * pattern set *)
+let lr_matcher
+    (rmap: (op * (int * int) list) list array)
+    (states: p state array)
+    (rules: rule list)
+    (name: string) =
+  let rec aux ids pats k =
+    Switch (List.map (fun id -> id,
+        let id_ops = rmap.(id) in
+        let atm_pats, bin_pats =
+          List.filter (function
+            | (Bnr (o, _, _), _) ->
+                List.exists (fun (o', _) -> o' = o) id_ops
+            | _ -> true) pats |>
+          List.partition (fun (pat, _) -> is_atomic pat)
+        in
+        if bin_pats = [] then
+          let matched_pats = List.filter (fun (pat, _) ->
+              pattern_match pat states.(id).seen) atm_pats
+          in
+          let vars =
+            List.filter_map (function
+                | (Var (v, _), _) -> Some v
+                | _ -> None) matched_pats |>
+            setify
+          in
+          match vars with
+          | [] -> k matched_pats
+          | [v] -> Set (v, k matched_pats)
+          | _ -> failwith "ambiguous var match"
+        else
+          let lhs_pats =
+            List.map (function
+                | (Bnr (o, pl, pr), c) ->
+                    (pl, Bnrl (o, c, pr))
+                | _ -> assert false) bin_pats
+          in
+          let lhs_ids, rhs_ids =
+            List.split (List.concat_map snd id_ops) in
+          let lhs_ids = setify lhs_ids
+          and rhs_ids = setify rhs_ids in
+          Push (aux lhs_ids lhs_pats (fun matched_pats ->
+              (* using the patterns that have been matched
+               * we can reduce the list of rhs states *)
+              let rhs_ids = List.filter (fun id ->
+                  let matched_lhs = function
+                    | Bnrr (o, pl, _) ->
+                        List.for_all (function
+                          | (pm, Bnrl (_o', _, _)) ->
+                              (* Eeh, not sure about all this. *)
+                              (* o = o' && *) pattern_match pl pm
+                          | _ -> assert false) matched_pats
+                    | _ -> false
+                  in
+                  List.exists matched_lhs states.(id).point)
+                  rhs_ids
+              in
+              let rhs_pats = List.map (function
+                  | (pl, Bnrl (o, c, pr)) ->
+                      (pr, Bnrr (o, pl, c))
+                  | _ -> assert false) matched_pats
+              in
+              Pop (aux rhs_ids rhs_pats (fun matched_pats ->
+                  let matched_pats = List.map (function
+                      | (pr, Bnrr (o, pl, c)) ->
+                          (Bnr (o, pl, pr), c)
+                      | _ -> assert false) matched_pats
+                  in
+                  k matched_pats)))))
+      ids)
+  in
+  let top_ids =
+    Array.to_seq states |>
+    Seq.filter_map (fun {id; point = p; _} ->
+        if List.exists ((=) (Top name)) p then
+          Some id
+        else None) |>
+    List.of_seq
+  in
+  let top_pats =
+    List.filter_map (fun r ->
+        if r.name = name then
+          Some (r.pattern, Top ())
+        else None) rules
+  in
+  aux top_ids top_pats (fun _ -> Done)
+
+let invert_statemap n sm =
+  let rmap = Array.create n [] in
+  StateMap.iter (fun k s ->
+      match k with
+      | K (o, {id = idl; _}, {id = idr; _}) ->
+          rmap.(s.id) <- (o, (idl, idr)) :: rmap.(s.id)
+    ) sm;
+  Array.map group_by_fst rmap
