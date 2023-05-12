@@ -1,4 +1,4 @@
-#use "match.ml"
+#use "match.ml";;
 
 let test_pattern_match =
   let pm = pattern_match

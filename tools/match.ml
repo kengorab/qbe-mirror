@@ -359,7 +359,7 @@ let rec ac_equiv =
   | x -> [x]
 
 type action =
-  | Switch of (int * action) list
+  | Switch of (int * action) list * action option
   | Push of action
   | Pop of action
   | Set of string * action
@@ -373,8 +373,30 @@ let lr_matcher
     (states: p state array)
     (rules: rule list)
     (name: string) =
+  let mk_switch ids f =
+    let cases = List.map (fun id -> id, f id) ids in
+    let list_count p =
+      List.fold_left (fun n x -> if p x then n + 1 else n) 0
+    in
+    let cnt, default =
+      List.map (fun (_, c) -> 
+          (list_count (fun (_, c') -> c' = c) cases, c))
+        cases |>
+      List.sort (fun a b -> -compare a b) |> List.hd
+    in
+    if cnt = List.length ids then
+      default
+    else if cnt = 1 then
+      Switch (cases, None)
+    else
+      let no_default =
+        List.filter (fun (_, c) -> c <> default) cases
+      in
+      Switch (no_default, Some default)
+  in
+
   let rec aux ids pats k =
-    Switch (List.map (fun id -> id,
+    mk_switch ids (fun id ->
         let id_ops = rmap.(id) in
         let atm_pats, bin_pats =
           List.filter (function
@@ -394,8 +416,8 @@ let lr_matcher
             setify
           in
           match vars with
-          | [] -> k matched_pats
-          | [v] -> Set (v, k matched_pats)
+          | [] -> k id matched_pats
+          | [v] -> Set (v, k id matched_pats)
           | _ -> failwith "ambiguous var match"
         else
           let lhs_pats =
@@ -404,39 +426,33 @@ let lr_matcher
                     (pl, Bnrl (o, c, pr))
                 | _ -> assert false) bin_pats
           in
-          let lhs_ids, rhs_ids =
-            List.split (List.concat_map snd id_ops) in
-          let lhs_ids = setify lhs_ids
-          and rhs_ids = setify rhs_ids in
-          Push (aux lhs_ids lhs_pats (fun matched_pats ->
+          let lhs_ids =
+            List.concat_map snd id_ops |>
+            List.map fst |> setify
+          in
+          Push (aux lhs_ids lhs_pats (fun matched_id matched_pats ->
+              let rhs_ids =
+                List.concat_map snd id_ops |> group_by_fst |>
+                List.find (fun (id, _) -> id = matched_id) |>
+                snd |> setify
+              in
               (* using the patterns that have been matched
                * we can reduce the list of rhs states *)
-              let rhs_ids = List.filter (fun id ->
-                  let matched_lhs = function
-                    | Bnrr (o, pl, _) ->
-                        List.for_all (function
-                          | (pm, Bnrl (_o', _, _)) ->
-                              (* Eeh, not sure about all this. *)
-                              (* o = o' && *) pattern_match pl pm
-                          | _ -> assert false) matched_pats
-                    | _ -> false
-                  in
-                  List.exists matched_lhs states.(id).point)
-                  rhs_ids
+              let rhs_ids = List.filter (fun _id ->
+                  true (* TODO *)) rhs_ids
               in
               let rhs_pats = List.map (function
                   | (pl, Bnrl (o, c, pr)) ->
                       (pr, Bnrr (o, pl, c))
                   | _ -> assert false) matched_pats
               in
-              Pop (aux rhs_ids rhs_pats (fun matched_pats ->
+              Pop (aux rhs_ids rhs_pats (fun _ matched_pats ->
                   let matched_pats = List.map (function
                       | (pr, Bnrr (o, pl, c)) ->
                           (Bnr (o, pl, pr), c)
                       | _ -> assert false) matched_pats
                   in
-                  k matched_pats)))))
-      ids)
+                  k id matched_pats)))))
   in
   let top_ids =
     Array.to_seq states |>
@@ -452,10 +468,10 @@ let lr_matcher
           Some (r.pattern, Top ())
         else None) rules
   in
-  aux top_ids top_pats (fun _ -> Done)
+  aux top_ids top_pats (fun _ _ -> Done)
 
 let invert_statemap n sm =
-  let rmap = Array.create n [] in
+  let rmap = Array.make n [] in
   StateMap.iter (fun k s ->
       match k with
       | K (o, {id = idl; _}, {id = idr; _}) ->
