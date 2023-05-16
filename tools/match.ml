@@ -358,12 +358,96 @@ let rec ac_equiv =
           Bnr (o, l, r) :: out)
   | x -> [x]
 
-type action =
-  | Switch of (int * action) list * action option
-  | Push of action
-  | Pop of action
-  | Set of string * action
-  | Done
+module Action: sig
+  type node =
+    | Switch of (int * t) list * t option
+    | Push of t
+    | Pop of t
+    | Set of string * t
+    | Done
+  and t = private
+    { id: int; node: node }
+  val equal: t -> t -> bool
+  val size: t -> int
+  val done_: t
+  val mk_push: t -> t
+  val mk_pop: t -> t
+  val mk_set: string -> t -> t
+  val mk_switch: ?default:t -> (int * t) list -> t
+  val pp: Format.formatter -> t -> unit
+end = struct
+  type node =
+    | Switch of (int * t) list * t option
+    | Push of t
+    | Pop of t
+    | Set of string * t
+    | Done
+  and t =
+    { id: int; node: node }
+
+  let equal a a' = a.id = a'.id
+  let size a =
+    let seen = Hashtbl.create 10 in
+    let rec node_size = function
+      | Switch (l, d) ->
+          List.fold_left
+            (fun n (_, a) -> n + size a)
+            (match d with
+             | None -> 0
+             | Some a -> size a)
+            l
+      | (Push a | Pop a | Set (_, a)) -> size a
+      | Done -> 0
+    and size {id; node} =
+      if Hashtbl.mem seen id
+      then 0
+      else begin
+        Hashtbl.add seen id ();
+        1 + node_size node
+      end
+    in
+    size a
+
+  let mk =
+    let hcons = Hashtbl.create 100 in
+    let fresh = ref 0 in
+    fun node ->
+      let id =
+        try Hashtbl.find hcons node
+        with Not_found ->
+          let id = !fresh in
+          Hashtbl.add hcons node id;
+          fresh := id + 1;
+          id
+      in
+      {id; node}
+  let done_ = mk Done
+  let mk_push a = mk (Push a)
+  let mk_pop a = mk (Pop a)
+  let mk_set v a = mk (Set (v, a))
+  let mk_switch ?default cases =
+    mk (Switch (cases, default))
+
+  open Format
+  let rec pp_node fmt = function
+    | Switch (l, d) ->
+        fprintf fmt "@[<v>@[<v2>switch{@ ";
+        List.iter (fun (n, a) ->
+            fprintf fmt "@[<hv2>→%d:@ %a@]@," n pp a)
+          l;
+        begin match d with
+        | None -> ()
+        | Some a ->
+            fprintf fmt "@[<hv2>→?:@ %a@]" pp a
+        end;
+        fprintf fmt "@]@,}@]"
+    | Push a -> fprintf fmt "push@ %a" pp a
+    | Pop a -> fprintf fmt "pop@ %a" pp a
+    | Set (v, a) -> fprintf fmt "set(%s)@ %a" v pp a
+    | Done -> fprintf fmt "•"
+  and pp fmt {id; node} =
+    fprintf fmt "%a" pp_node node
+end
 
 (* left-to-right matching of a set of patterns;
  * may raise if there is no lr matcher for the
@@ -380,19 +464,20 @@ let lr_matcher
     in
     let cnt, default =
       List.map (fun (_, c) -> 
-          (list_count (fun (_, c') -> c' = c) cases, c))
-        cases |>
-      List.sort (fun a b -> -compare a b) |> List.hd
+          ( list_count (fun (_, c') -> Action.equal c' c) cases
+          , c)) cases |>
+      List.sort (fun a b -> compare b a) |> List.hd
     in
     if cnt = List.length ids then
       default
     else if cnt = 1 then
-      Switch (cases, None)
+      Action.mk_switch cases
     else
       let no_default =
-        List.filter (fun (_, c) -> c <> default) cases
+        List.filter (fun (_, c) ->
+            not (Action.equal c default)) cases
       in
-      Switch (no_default, Some default)
+      Action.mk_switch ~default no_default
   in
 
   let rec aux ids pats k =
@@ -417,7 +502,7 @@ let lr_matcher
           in
           match vars with
           | [] -> k id matched_pats
-          | [v] -> Set (v, k id matched_pats)
+          | [v] -> Action.mk_set v (k id matched_pats)
           | _ -> failwith "ambiguous var match"
         else
           let lhs_pats =
@@ -430,23 +515,21 @@ let lr_matcher
             List.concat_map snd id_ops |>
             List.map fst |> setify
           in
-          Push (aux lhs_ids lhs_pats (fun matched_id matched_pats ->
+          Action.mk_push (aux lhs_ids lhs_pats (fun matched_id matched_pats ->
               let rhs_ids =
-                List.concat_map snd id_ops |> group_by_fst |>
-                List.find (fun (id, _) -> id = matched_id) |>
-                snd |> setify
+                List.concat_map snd id_ops |>
+                List.filter (fun (id, _) -> id = matched_id) |>
+                List.map snd |> setify
               in
-              (* using the patterns that have been matched
-               * we can reduce the list of rhs states *)
-              let rhs_ids = List.filter (fun _id ->
-                  true (* TODO *)) rhs_ids
-              in
+              (* TODO, using the patterns that have been
+               * matched we may be able to reduce the list
+               * of rhs states *)
               let rhs_pats = List.map (function
                   | (pl, Bnrl (o, c, pr)) ->
                       (pr, Bnrr (o, pl, c))
                   | _ -> assert false) matched_pats
               in
-              Pop (aux rhs_ids rhs_pats (fun _ matched_pats ->
+              Action.mk_pop (aux rhs_ids rhs_pats (fun _ matched_pats ->
                   let matched_pats = List.map (function
                       | (pr, Bnrr (o, pl, c)) ->
                           (Bnr (o, pl, pr), c)
@@ -468,7 +551,7 @@ let lr_matcher
           Some (r.pattern, Top ())
         else None) rules
   in
-  aux top_ids top_pats (fun _ _ -> Done)
+  aux top_ids top_pats (fun _ _ -> Action.done_)
 
 let invert_statemap n sm =
   let rmap = Array.make n [] in
