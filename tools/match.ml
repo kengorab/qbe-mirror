@@ -361,7 +361,7 @@ let rec ac_equiv =
 module Action: sig
   type node =
     | Switch of (int * t) list * t option
-    | Push of t
+    | Push of bool * t
     | Pop of t
     | Set of string * t
     | Done
@@ -370,7 +370,7 @@ module Action: sig
   val equal: t -> t -> bool
   val size: t -> int
   val done_: t
-  val mk_push: t -> t
+  val mk_push: sym:bool -> t -> t
   val mk_pop: t -> t
   val mk_set: string -> t -> t
   val mk_switch: ?default:t -> (int * t) list -> t
@@ -378,7 +378,7 @@ module Action: sig
 end = struct
   type node =
     | Switch of (int * t) list * t option
-    | Push of t
+    | Push of bool * t
     | Pop of t
     | Set of string * t
     | Done
@@ -396,7 +396,8 @@ end = struct
              | None -> 0
              | Some a -> size a)
             l
-      | (Push a | Pop a | Set (_, a)) -> size a
+      | (Push (_, a) | Pop a | Set (_, a)) ->
+          size a
       | Done -> 0
     and size {id; node} =
       if Hashtbl.mem seen id
@@ -422,8 +423,11 @@ end = struct
       in
       {id; node}
   let done_ = mk Done
-  let mk_push a = mk (Push a)
-  let mk_pop a = mk (Pop a)
+  let mk_push ~sym a = mk (Push (sym, a))
+  let mk_pop a =
+    match a.node with
+    | Done -> a
+    | _ -> mk (Pop a)
   let mk_set v a = mk (Set (v, a))
   let mk_switch ?default cases =
     mk (Switch (cases, default))
@@ -431,17 +435,17 @@ end = struct
   open Format
   let rec pp_node fmt = function
     | Switch (l, d) ->
-        fprintf fmt "@[<v>@[<v2>switch{@ ";
-        List.iter (fun (n, a) ->
-            fprintf fmt "@[<hv2>→%d:@ %a@]@," n pp a)
-          l;
+        fprintf fmt "@[<v>@[<v2>switch{";
+        List.iteri (fun i (n, a) ->
+            fprintf fmt "@,@[<hv2>→%d:@ %a@]" n pp a) l;
         begin match d with
         | None -> ()
         | Some a ->
-            fprintf fmt "@[<hv2>→?:@ %a@]" pp a
+            fprintf fmt "@,@[<hv2>→?:@ %a@]" pp a
         end;
         fprintf fmt "@]@,}@]"
-    | Push a -> fprintf fmt "push@ %a" pp a
+    | Push (true, a) -> fprintf fmt "pushsym@ %a" pp a
+    | Push (false, a) -> fprintf fmt "push@ %a" pp a
     | Pop a -> fprintf fmt "pop@ %a" pp a
     | Set (v, a) -> fprintf fmt "set(%s)@ %a" v pp a
     | Done -> fprintf fmt "•"
@@ -457,6 +461,16 @@ let lr_matcher
     (states: p state array)
     (rules: rule list)
     (name: string) =
+  let commutative id =
+    List.for_all (fun (_, args) ->
+        let l1, l2 =
+          List.filter (fun (a, b) -> a <> b) args |>
+          List.partition (fun (a, b) -> a < b)
+        in
+        let l2 = List.map (fun (a, b) -> (b, a)) l2 in
+        setify l1 = setify l2)
+      rmap.(id)
+  in
   let mk_switch ids f =
     let cases = List.map (fun id -> id, f id) ids in
     let list_count p =
@@ -479,10 +493,18 @@ let lr_matcher
       in
       Action.mk_switch ~default no_default
   in
+  let exception Stuck in
 
   let rec aux ids pats k =
     mk_switch ids (fun id ->
-        let id_ops = rmap.(id) in
+        let id_com = commutative id in
+        let id_ops =
+          if id_com then
+            List.map (fun (o, l) ->
+                (o, List.filter (fun (a, b) -> a <= b) l))
+              rmap.(id)
+          else rmap.(id)
+        in
         let atm_pats, bin_pats =
           List.filter (function
             | (Bnr (o, _, _), _) ->
@@ -490,21 +512,8 @@ let lr_matcher
             | _ -> true) pats |>
           List.partition (fun (pat, _) -> is_atomic pat)
         in
-        if bin_pats = [] then
-          let matched_pats = List.filter (fun (pat, _) ->
-              pattern_match pat states.(id).seen) atm_pats
-          in
-          let vars =
-            List.filter_map (function
-                | (Var (v, _), _) -> Some v
-                | _ -> None) matched_pats |>
-            setify
-          in
-          match vars with
-          | [] -> k id matched_pats
-          | [v] -> Action.mk_set v (k id matched_pats)
-          | _ -> failwith "ambiguous var match"
-        else
+        try
+          if bin_pats = [] then raise Stuck else
           let lhs_pats =
             List.map (function
                 | (Bnr (o, pl, pr), c) ->
@@ -515,15 +524,12 @@ let lr_matcher
             List.concat_map snd id_ops |>
             List.map fst |> setify
           in
-          Action.mk_push (aux lhs_ids lhs_pats (fun matched_id matched_pats ->
+          Action.mk_push ~sym:id_com (aux lhs_ids lhs_pats (fun matched_id matched_pats ->
               let rhs_ids =
                 List.concat_map snd id_ops |>
                 List.filter (fun (id, _) -> id = matched_id) |>
                 List.map snd |> setify
               in
-              (* TODO, using the patterns that have been
-               * matched we may be able to reduce the list
-               * of rhs states *)
               let rhs_pats = List.map (function
                   | (pl, Bnrl (o, c, pr)) ->
                       (pr, Bnrr (o, pl, c))
@@ -535,8 +541,24 @@ let lr_matcher
                           (Bnr (o, pl, pr), c)
                       | _ -> assert false) matched_pats
                   in
-                  k id matched_pats)))))
+                  k id matched_pats))))
+        with Stuck ->
+          let matched_pats = List.filter (fun (pat, _) ->
+              pattern_match pat states.(id).seen) atm_pats
+          in
+          if matched_pats = [] then raise Stuck else
+          let vars =
+            List.filter_map (function
+                | (Var (v, _), _) -> Some v
+                | _ -> None) matched_pats |>
+            setify
+          in
+          match vars with
+          | [] -> k id matched_pats
+          | [v] -> Action.mk_set v (k id matched_pats)
+          | _ -> failwith "ambiguous var match")
   in
+
   let top_ids =
     Array.to_seq states |>
     Seq.filter_map (fun {id; point = p; _} ->

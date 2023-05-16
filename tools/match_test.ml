@@ -78,11 +78,11 @@ let rules =
     (* o + b *)
     (* rule "ob" (Bnr (oa, Atm Tmp, Atm AnyCon)) *) []
     @ (* b + s * i *)
-    (* rule "bs" (Bnr (oa, Atm Tmp, Bnr (om, Atm (Con 4L), Atm Tmp))) *) []
+    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 4L), vs)))
     @ (* o + s * i *)
     (* rule "os" (Bnr (oa, Atm AnyCon, Bnr (om, Atm (Con 4L), Atm Tmp))) *) []
     @ (* b + o + s * i *)
-    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb), Bnr (om, Atm (Con 4L), vs)))
+    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb), Bnr (om, Var ("m", Con 4L), vs)))
   (* ------------------------------- *)
   | `Add3 ->
     [ { name = "add"
@@ -105,3 +105,4 @@ let () = print_sm sm
 
 let matcher = lr_matcher (invert_statemap (Array.length sl) sm) sl rules "bos"
 let () = Format.printf "@[<v>%a@]@." Action.pp matcher
+let () = Format.printf "@[matcher size: %d@]@." (Action.size matcher)
