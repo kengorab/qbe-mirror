@@ -3,14 +3,17 @@ type op_base =
   | Oadd
   | Osub
   | Omul
+  | Oor
+  | Oshl
+  | Oshr
 type op = cls * op_base
 
 let commutative = function
-  | (_, (Oadd | Omul)) -> true
+  | (_, (Oadd | Omul | Oor)) -> true
   | (_, _) -> false
 
 let associative = function
-  | (_, (Oadd | Omul)) -> true
+  | (_, (Oadd | Omul | Oor)) -> true
   | (_, _) -> false
 
 type atomic_pattern =
@@ -31,7 +34,10 @@ let show_op (k, o) =
   (match o with
    | Oadd -> "add"
    | Osub -> "sub"
-   | Omul -> "mul") ^
+   | Omul -> "mul"
+   | Oor -> "or"
+   | Oshl -> "shl"
+   | Oshr -> "shr") ^
   (match k with
    | Kw -> "w"
    | Kl -> "l"
@@ -71,7 +77,7 @@ let rec pattern_match p w =
       | _ -> false
       end
 
-type 'a cursor = (* a position inside a pattern *)
+type +'a cursor = (* a position inside a pattern *)
   | Bnrl of op * 'a cursor * pattern
   | Bnrr of op * pattern * 'a cursor
   | Top of 'a
@@ -214,14 +220,25 @@ end
 type table_key =
   | K of op * p state * p state
 
-module StateMap = Map.Make(struct
-  type t = table_key
-  let compare ka kb =
-    match ka, kb with
-    | K (o, sl, sr), K (o', sl', sr') ->
-        compare (o, sl.id, sr.id)
-                (o', sl'.id, sr'.id)
-end)
+module StateMap = struct
+  include Map.Make(struct
+      type t = table_key
+      let compare ka kb =
+        match ka, kb with
+        | K (o, sl, sr), K (o', sl', sr') ->
+            compare (o, sl.id, sr.id)
+                    (o', sl'.id, sr'.id)
+    end)
+  let invert n sm =
+    let rmap = Array.make n [] in
+    iter (fun k {id; _} ->
+        match k with
+        | K (o, sl, sr) ->
+            rmap.(id) <-
+              (o, (sl.id, sr.id)) :: rmap.(id)
+      ) sm;
+    Array.map group_by_fst rmap
+end
 
 type rule =
   { name: string
@@ -453,62 +470,76 @@ end = struct
     fprintf fmt "%a" pp_node node
 end
 
+let count p l =
+  let f n x = if p x then n + 1 else n in
+  List.fold_left f 0 l
+
+let mk_switch ids f =
+  if ids = [] then
+    failwith "empty switch";
+  let (=$) = Action.equal in
+  let cases = List.map f ids in
+  let cnt, default =
+    List.fold_left (fun (nd, d) c -> 
+        let nc = count ((=$) c) cases in
+        if nc > nd then (nc, c) else (nd, d))
+      (0, Action.done_) cases
+  in
+  let cases = List.combine ids cases in
+  if cnt = List.length cases then
+    default
+  else if cnt = 1 then
+    Action.mk_switch cases
+  else
+    let cases =
+      List.filter (fun (_, c) ->
+          not (c =$ default)) cases
+    in
+    Action.mk_switch ~default cases
+
 (* left-to-right matching of a set of patterns;
  * may raise if there is no lr matcher for the
- * pattern set *)
-let lr_matcher
-    (rmap: (op * (int * int) list) list array)
-    (states: p state array)
-    (rules: rule list)
-    (name: string) =
-  let commutative id =
-    List.for_all (fun (_, args) ->
+ * input rule *)
+let lr_matcher statemap states rules name =
+  let rmap =
+    let nstates = Array.length states in
+    StateMap.invert nstates statemap
+  in
+  (* a state is commutative if (a op b) enters
+   * it iff (b op a) enters it as well *)
+  let symmetric id =
+    List.for_all (fun (_, l) ->
         let l1, l2 =
-          List.filter (fun (a, b) -> a <> b) args |>
+          List.filter (fun (a, b) -> a <> b) l |>
           List.partition (fun (a, b) -> a < b)
         in
         let l2 = List.map (fun (a, b) -> (b, a)) l2 in
         setify l1 = setify l2)
       rmap.(id)
   in
-  let mk_switch ids f =
-    let cases = List.map (fun id -> id, f id) ids in
-    let list_count p =
-      List.fold_left (fun n x -> if p x then n + 1 else n) 0
-    in
-    let cnt, default =
-      List.map (fun (_, c) -> 
-          ( list_count (fun (_, c') -> Action.equal c' c) cases
-          , c)) cases |>
-      List.sort (fun a b -> compare b a) |> List.hd
-    in
-    if cnt = List.length ids then
-      default
-    else if cnt = 1 then
-      Action.mk_switch cases
-    else
-      let no_default =
-        List.filter (fun (_, c) ->
-            not (Action.equal c default)) cases
-      in
-      Action.mk_switch ~default no_default
-  in
   let exception Stuck in
-
-  let rec aux ids pats k =
+  (* the list of ids represents a class of terms
+   * whose root ends up being labelled with one
+   * such id; the gen function generates a matcher
+   * that will, given any such term, assign values
+   * for the Var nodes of one pattern in pats *)
+  let rec gen ids pats k =
     mk_switch ids (fun id ->
-        let id_com = commutative id in
+        let id_sym = symmetric id in
         let id_ops =
-          if id_com then
-            List.map (fun (o, l) ->
-                (o, List.filter (fun (a, b) -> a <= b) l))
-              rmap.(id)
+          let normalize (o, l) =
+            (o, List.filter (fun (a, b) -> a <= b) l)
+          in
+          if id_sym then
+            List.map normalize rmap.(id)
           else rmap.(id)
         in
+        (* consider only the patterns that are
+         * compatible with the current id *)
         let atm_pats, bin_pats =
           List.filter (function
             | (Bnr (o, _, _), _) ->
-                List.exists (fun (o', _) -> o' = o) id_ops
+                List.exists (fun x -> fst x = o) id_ops
             | _ -> true) pats |>
           List.partition (fun (pat, _) -> is_atomic pat)
         in
@@ -524,41 +555,46 @@ let lr_matcher
             List.concat_map snd id_ops |>
             List.map fst |> setify
           in
-          Action.mk_push ~sym:id_com (aux lhs_ids lhs_pats (fun matched_id matched_pats ->
+          Action.mk_push ~sym:id_sym
+            (gen lhs_ids lhs_pats (fun lhs_id pats ->
               let rhs_ids =
                 List.concat_map snd id_ops |>
-                List.filter (fun (id, _) -> id = matched_id) |>
-                List.map snd |> setify
+                List.filter_map (fun (l, r) ->
+                    if l = lhs_id then Some r else None) |>
+                setify
               in
-              let rhs_pats = List.map (function
+              let rhs_pats =
+                List.map (function
                   | (pl, Bnrl (o, c, pr)) ->
                       (pr, Bnrr (o, pl, c))
-                  | _ -> assert false) matched_pats
+                  | _ -> assert false) pats
               in
-              Action.mk_pop (aux rhs_ids rhs_pats (fun _ matched_pats ->
-                  let matched_pats = List.map (function
+              Action.mk_pop
+                (gen rhs_ids rhs_pats (fun _ pats ->
+                  let id_pats =
+                    List.map (function
                       | (pr, Bnrr (o, pl, c)) ->
                           (Bnr (o, pl, pr), c)
-                      | _ -> assert false) matched_pats
+                      | _ -> assert false) pats
                   in
-                  k id matched_pats))))
+                  k id id_pats))))
         with Stuck ->
-          let matched_pats = List.filter (fun (pat, _) ->
+          let atm_pats =
+            List.filter (fun (pat, _) ->
               pattern_match pat states.(id).seen) atm_pats
           in
-          if matched_pats = [] then raise Stuck else
+          if atm_pats = [] then raise Stuck else
           let vars =
             List.filter_map (function
                 | (Var (v, _), _) -> Some v
-                | _ -> None) matched_pats |>
+                | _ -> None) atm_pats |>
             setify
           in
           match vars with
-          | [] -> k id matched_pats
-          | [v] -> Action.mk_set v (k id matched_pats)
+          | [] -> k id atm_pats
+          | [v] -> Action.mk_set v (k id atm_pats)
           | _ -> failwith "ambiguous var match")
   in
-
   let top_ids =
     Array.to_seq states |>
     Seq.filter_map (fun {id; point = p; _} ->
@@ -573,13 +609,8 @@ let lr_matcher
           Some (r.pattern, Top ())
         else None) rules
   in
-  aux top_ids top_pats (fun _ _ -> Action.done_)
-
-let invert_statemap n sm =
-  let rmap = Array.make n [] in
-  StateMap.iter (fun k s ->
-      match k with
-      | K (o, {id = idl; _}, {id = idr; _}) ->
-          rmap.(s.id) <- (o, (idl, idr)) :: rmap.(s.id)
-    ) sm;
-  Array.map group_by_fst rmap
+  gen top_ids top_pats (fun _ pats ->
+      assert (pats <> []);
+      let at_top (_, c) = c = Top () in
+      assert (List.for_all at_top pats);
+      Action.done_)

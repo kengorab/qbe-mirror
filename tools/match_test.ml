@@ -63,6 +63,8 @@ let print_sm =
 let rules =
   let oa = Kl, Oadd in
   let om = Kl, Omul in
+  let oshl = Kl, Oshl in
+  let oshr = Kl, Oshr in
   let va = Var ("a", Tmp)
   and vb = Var ("b", Tmp)
   and vc = Var ("c", Tmp)
@@ -103,6 +105,6 @@ let rules =
 let sl, sm = generate_table rules
 let () = print_sm sm
 
-let matcher = lr_matcher (invert_statemap (Array.length sl) sm) sl rules "bos"
+let matcher = lr_matcher sm sl rules "bos"
 let () = Format.printf "@[<v>%a@]@." Action.pp matcher
 let () = Format.printf "@[matcher size: %d@]@." (Action.size matcher)
