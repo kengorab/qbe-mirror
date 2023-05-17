@@ -63,26 +63,29 @@ let print_sm =
 let rules =
   let oa = Kl, Oadd in
   let om = Kl, Omul in
-  let oshl = Kl, Oshl in
-  let oshr = Kl, Oshr in
   let va = Var ("a", Tmp)
   and vb = Var ("b", Tmp)
   and vc = Var ("c", Tmp)
   and vs = Var ("s", Tmp) in
+  let rule name pattern =
+    List.mapi (fun i pattern ->
+        { name (* = Printf.sprintf "%s%d" name (i+1) *)
+        ; pattern })
+      (ac_equiv pattern)
+  in
   match `X64Addr with
   (* ------------------------------- *)
   | `X64Addr ->
-    let rule name pattern =
-      List.mapi (fun i pattern ->
-          { name (* = Printf.sprintf "%s%d" name (i+1) *)
-          ; pattern })
-        (ac_equiv pattern) in
     (* o + b *)
     (* rule "ob" (Bnr (oa, Atm Tmp, Atm AnyCon)) *) []
     @ (* b + s * i *)
     rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 4L), vs)))
+    @  (* b + s *)
+    rule "bs1" (Bnr (oa, vb, vs))
     @ (* o + s * i *)
     (* rule "os" (Bnr (oa, Atm AnyCon, Bnr (om, Atm (Con 4L), Atm Tmp))) *) []
+    @ (* b + o + s *)
+    rule "bos1" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb), vs))
     @ (* b + o + s * i *)
     rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb), Bnr (om, Var ("m", Con 4L), vs)))
   (* ------------------------------- *)
@@ -103,7 +106,7 @@ let rules =
 
 
 let sl, sm = generate_table rules
-let () = print_sm sm
+let () = print_sm sm; flush stdout
 
 let matcher = lr_matcher sm sl rules "bos"
 let () = Format.printf "@[<v>%a@]@." Action.pp matcher

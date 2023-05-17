@@ -56,13 +56,18 @@ let rec show_pattern p =
       " " ^ show_pattern pl ^
       " " ^ show_pattern pr ^ ")"
 
+let atomic p =
+  match p with
+  | (Atm a | Var (_, a)) -> Some a
+  | _ -> None
+
 let rec pattern_match p w =
   match p with
   | Var (_, p) ->
       pattern_match (Atm p) w
   | Atm Tmp ->
-      begin match w with
-      | Atm (Con _ | AnyCon) -> false
+      begin match atomic w with
+      | Some (Con _ | AnyCon) -> false
       | _ -> true
       end
   | Atm (Con _) -> w = p
@@ -170,7 +175,7 @@ let next_binary tmp s1 s2 =
            List.map fst in
   List.map (fun (o, l) ->
     o,
-    { id = 0
+    { id = -1
     ; seen = Bnr (o, s1.seen, s2.seen)
     ; point = normalize (l @ tmp)
     }) (group_by_fst (o1 @ o2))
@@ -264,7 +269,7 @@ let generate_table rl =
         then normalize (tmp @ l)
         else normalize (con @ l)
       in
-      let s = {id = 0; seen; point} in
+      let s = {id = -1; seen; point} in
       let flag, _ = StateSet.add states s in
       assert (flag = `Added)
     ) ground
@@ -381,12 +386,12 @@ module Action: sig
     | Push of bool * t
     | Pop of t
     | Set of string * t
-    | Done
+    | Stop
   and t = private
     { id: int; node: node }
   val equal: t -> t -> bool
   val size: t -> int
-  val done_: t
+  val stop: t
   val mk_push: sym:bool -> t -> t
   val mk_pop: t -> t
   val mk_set: string -> t -> t
@@ -398,7 +403,7 @@ end = struct
     | Push of bool * t
     | Pop of t
     | Set of string * t
-    | Done
+    | Stop
   and t =
     { id: int; node: node }
 
@@ -415,7 +420,7 @@ end = struct
             l
       | (Push (_, a) | Pop a | Set (_, a)) ->
           size a
-      | Done -> 0
+      | Stop -> 0
     and size {id; node} =
       if Hashtbl.mem seen id
       then 0
@@ -439,11 +444,11 @@ end = struct
           id
       in
       {id; node}
-  let done_ = mk Done
+  let stop = mk Stop
   let mk_push ~sym a = mk (Push (sym, a))
   let mk_pop a =
     match a.node with
-    | Done -> a
+    | Stop -> a
     | _ -> mk (Pop a)
   let mk_set v a = mk (Set (v, a))
   let mk_switch ?default cases =
@@ -453,21 +458,22 @@ end = struct
   let rec pp_node fmt = function
     | Switch (l, d) ->
         fprintf fmt "@[<v>@[<v2>switch{";
-        List.iteri (fun i (n, a) ->
-            fprintf fmt "@,@[<hv2>→%d:@ %a@]" n pp a) l;
+        let pp_case pp_c (c, a) =
+          fprintf fmt
+            "@,@[<2>→%a:@ @[%a@]@]" pp_c c pp a
+        in
+        List.iter (pp_case pp_print_int) l;
         begin match d with
         | None -> ()
-        | Some a ->
-            fprintf fmt "@,@[<hv2>→?:@ %a@]" pp a
+        | Some a -> pp_case pp_print_string ("?", a)
         end;
         fprintf fmt "@]@,}@]"
     | Push (true, a) -> fprintf fmt "pushsym@ %a" pp a
     | Push (false, a) -> fprintf fmt "push@ %a" pp a
     | Pop a -> fprintf fmt "pop@ %a" pp a
     | Set (v, a) -> fprintf fmt "set(%s)@ %a" v pp a
-    | Done -> fprintf fmt "•"
-  and pp fmt {id; node} =
-    fprintf fmt "%a" pp_node node
+    | Stop -> fprintf fmt "•"
+  and pp fmt a = pp_node fmt a.node
 end
 
 let count p l =
@@ -483,7 +489,7 @@ let mk_switch ids f =
     List.fold_left (fun (nd, d) c -> 
         let nc = count ((=$) c) cases in
         if nc > nd then (nc, c) else (nd, d))
-      (0, Action.done_) cases
+      (0, Action.stop) cases
   in
   let cases = List.combine ids cases in
   if cnt = List.length cases then
@@ -595,6 +601,7 @@ let lr_matcher statemap states rules name =
           | [v] -> Action.mk_set v (k id atm_pats)
           | _ -> failwith "ambiguous var match")
   in
+  (* generate a matcher for the rule *)
   let top_ids =
     Array.to_seq states |>
     Seq.filter_map (fun {id; point = p; _} ->
@@ -603,14 +610,24 @@ let lr_matcher statemap states rules name =
         else None) |>
     List.of_seq
   in
+  let rec filter_dups pats =
+    match pats with
+    | p :: pats ->
+        if List.exists (pattern_match p) pats
+        then filter_dups pats
+        else p :: filter_dups pats
+    | [] -> []
+  in
   let top_pats =
     List.filter_map (fun r ->
         if r.name = name then
-          Some (r.pattern, Top ())
-        else None) rules
+          Some r.pattern
+        else None) rules |>
+    filter_dups |>
+    List.map (fun p -> (p, Top ()))
   in
   gen top_ids top_pats (fun _ pats ->
       assert (pats <> []);
       let at_top (_, c) = c = Top () in
       assert (List.for_all at_top pats);
-      Action.done_)
+      Action.stop)
