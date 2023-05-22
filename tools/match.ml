@@ -208,8 +208,6 @@ end = struct
     with Not_found -> begin
       let id = set.next_id in
       set.next_id <- id + 1;
-      Printf.printf "adding: %d [%s]\n"
-        id (show_pattern s.seen);
       add set.h s id;
       `Added, {s with id}
     end
