@@ -56,7 +56,7 @@ let rec show_pattern p =
       " " ^ show_pattern pl ^
       " " ^ show_pattern pr ^ ")"
 
-let atomic p =
+let get_atomic p =
   match p with
   | (Atm a | Var (_, a)) -> Some a
   | _ -> None
@@ -66,7 +66,7 @@ let rec pattern_match p w =
   | Var (_, p) ->
       pattern_match (Atm p) w
   | Atm Tmp ->
-      begin match atomic w with
+      begin match get_atomic w with
       | Some (Con _ | AnyCon) -> false
       | _ -> true
       end
@@ -174,11 +174,11 @@ let next_binary tmp s1 s2 =
            List.filter (pm s1.seen) |>
            List.map fst in
   List.map (fun (o, l) ->
-    o,
-    { id = -1
-    ; seen = Bnr (o, s1.seen, s2.seen)
-    ; point = normalize (l @ tmp)
-    }) (group_by_fst (o1 @ o2))
+      o,
+      { id = -1
+      ; seen = Bnr (o, s1.seen, s2.seen)
+      ; point = normalize (l @ tmp) })
+    (group_by_fst (o1 @ o2))
 
 type p = string
 
@@ -245,8 +245,7 @@ end
 
 type rule =
   { name: string
-  ; pattern: pattern
-  }
+  ; pattern: pattern }
 
 let generate_table rl =
   let states = StateSet.create () in

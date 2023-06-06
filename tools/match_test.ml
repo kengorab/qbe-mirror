@@ -1,6 +1,4 @@
-(* #use "match.ml";; *)
-
-open Match
+#use "match.ml";;
 
 (* unit tests *)
 
@@ -180,8 +178,7 @@ module TermPool = struct
   let create numbr =
     { terms = Buffer.create ()
     ; hcons = Hashtbl.create 100
-    ; numbr
-    }
+    ; numbr }
   let reset tp =
     Buffer.reset tp.terms;
     Hashtbl.clear tp.hcons
@@ -251,7 +248,7 @@ let term_pick ~numbr =
   let rec gen depth =
     (* exponential probability for leaves to
      * avoid skewing towards shallow terms *)
-    let atm_prob = Float.pow 0.7 (float_of_int depth) in
+    let atm_prob = 0.75 ** float_of_int depth in
     if R.float 1.0 <= atm_prob || ops = [] then
       let atom, st = list_pick numbr.atoms in
       (st, Atm atom)
@@ -284,7 +281,7 @@ let fuzz_numberer rules numbr =
   (* fuzz until the term pool we are constructing
    * is no longer growing fast enough; or we just
    * went through sufficiently many iterations *)
-  let max_iter = 100_000_000 in
+  let max_iter = 6_000_000 in
   let low_new_rate = 1e-2 in
   let tp = TermPool.create numbr in
   let rec loop new_stats i =
@@ -299,7 +296,7 @@ let fuzz_numberer rules numbr =
           0.5 *. (rate +. float_of_int cnt /. 255.)
         in
         let () =
-          Format.printf "i:%d r:%.3g%%@."
+          Format.printf "fuzzing... i=% 7d r=%.1f%%@."
             i (rate *. 1e2)
         in
         (num + 1, 0, rate)
@@ -330,9 +327,9 @@ let fuzz_numberer rules numbr =
       in
       printf "@[<v2>fuzz error for %s"
         (show_pattern term);
-      printf "@ state matched: %a"
+      printf "@ @[state matched: %a@]"
         pp_str_list state_matched;
-      printf "@ rule matched: %a"
+      printf "@ @[rule matched: %a@]"
         pp_str_list rule_matched;
       printf "@]@.";
       raise FuzzError;
@@ -360,12 +357,11 @@ let fuzz_numberer rules numbr =
 let make_numberer sa sm =
   { atoms = Array.to_seq sa |>
             Seq.filter_map (fun s ->
-                match atomic s.seen with
+                match get_atomic s.seen with
                 | Some a -> Some (a, s)
                 | None -> None) |>
             List.of_seq
   ; statemap = sm
-  ; ops = []
-  }
+  ; ops = [] }
 
 let _tp = fuzz_numberer rules (make_numberer sa sm)
