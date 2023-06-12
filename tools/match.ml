@@ -109,6 +109,10 @@ let peel p x =
     else go l'
   in go [(p, Top x)]
 
+let count p l =
+  let f n x = if p x then n + 1 else n in
+  List.fold_left f 0 l
+
 let fold_pairs l1 l2 ini f =
   let rec go acc = function
     | [] -> acc
@@ -379,7 +383,7 @@ let rec ac_equiv =
 
 module Action: sig
   type node =
-    | Switch of (int * t) list * t option
+    | Switch of (int * t) list
     | Push of bool * t
     | Pop of t
     | Set of string * t
@@ -392,11 +396,11 @@ module Action: sig
   val mk_push: sym:bool -> t -> t
   val mk_pop: t -> t
   val mk_set: string -> t -> t
-  val mk_switch: ?default:t -> (int * t) list -> t
+  val mk_switch: int list -> (int -> t) -> t
   val pp: Format.formatter -> t -> unit
 end = struct
   type node =
-    | Switch of (int * t) list * t option
+    | Switch of (int * t) list
     | Push of bool * t
     | Pop of t
     | Set of string * t
@@ -408,13 +412,9 @@ end = struct
   let size a =
     let seen = Hashtbl.create 10 in
     let rec node_size = function
-      | Switch (l, d) ->
+      | Switch l ->
           List.fold_left
-            (fun n (_, a) -> n + size a)
-            (match d with
-             | None -> 0
-             | Some a -> size a)
-            l
+            (fun n (_, a) -> n + size a) 0 l
       | (Push (_, a) | Pop a | Set (_, a)) ->
           size a
       | Stop -> 0
@@ -448,22 +448,24 @@ end = struct
     | Stop -> a
     | _ -> mk (Pop a)
   let mk_set v a = mk (Set (v, a))
-  let mk_switch ?default cases =
-    mk (Switch (cases, default))
+  let mk_switch ids f =
+    match List.map f ids with
+    | [] -> failwith "empty switch";
+    | c :: cs as cases ->
+        if List.for_all (equal c) cs then c
+        else
+          let cases = List.combine ids cases in
+          mk (Switch cases)
 
   open Format
   let rec pp_node fmt = function
-    | Switch (l, d) ->
+    | Switch l ->
         fprintf fmt "@[<v>@[<v2>switch{";
         let pp_case pp_c (c, a) =
           fprintf fmt
             "@,@[<2>→%a:@ @[%a@]@]" pp_c c pp a
         in
         List.iter (pp_case pp_print_int) l;
-        begin match d with
-        | None -> ()
-        | Some a -> pp_case pp_print_string ("?", a)
-        end;
         fprintf fmt "@]@,}@]"
     | Push (true, a) -> fprintf fmt "pushsym@ %a" pp a
     | Push (false, a) -> fprintf fmt "push@ %a" pp a
@@ -472,33 +474,6 @@ end = struct
     | Stop -> fprintf fmt "•"
   and pp fmt a = pp_node fmt a.node
 end
-
-let count p l =
-  let f n x = if p x then n + 1 else n in
-  List.fold_left f 0 l
-
-let mk_switch ids f =
-  if ids = [] then
-    failwith "empty switch";
-  let (=$) = Action.equal in
-  let cases = List.map f ids in
-  let cnt, default =
-    List.fold_left (fun (nd, d) c -> 
-        let nc = count ((=$) c) cases in
-        if nc > nd then (nc, c) else (nd, d))
-      (0, Action.stop) cases
-  in
-  let cases = List.combine ids cases in
-  if cnt = List.length cases then
-    default
-  else if cnt = 1 then
-    Action.mk_switch cases
-  else
-    let cases =
-      List.filter (fun (_, c) ->
-          not (c =$ default)) cases
-    in
-    Action.mk_switch ~default cases
 
 (* left-to-right matching of a set of patterns;
  * may raise if there is no lr matcher for the
@@ -526,8 +501,12 @@ let lr_matcher statemap states rules name =
    * such id; the gen function generates a matcher
    * that will, given any such term, assign values
    * for the Var nodes of one pattern in pats *)
-  let rec gen ids pats k =
-    mk_switch ids (fun id ->
+  let rec gen
+    : 'a. int list -> (pattern * 'a) list
+          -> (int -> (pattern * 'a) list -> Action.t)
+          -> Action.t
+    = fun ids pats k ->
+    Action.mk_switch ids (fun id ->
         let id_sym = symmetric id in
         let id_ops =
           let normalize (o, l) =
@@ -541,17 +520,17 @@ let lr_matcher statemap states rules name =
          * compatible with the current id *)
         let atm_pats, bin_pats =
           List.filter (function
-            | (Bnr (o, _, _), _) ->
-                List.exists (fun x -> fst x = o) id_ops
+            | Bnr (o, _, _), _ ->
+                List.exists (fun (o', _) -> o' = o) id_ops
             | _ -> true) pats |>
-          List.partition (fun (pat, _) -> is_atomic pat)
+          List.partition (fun (pat, x) -> is_atomic pat)
         in
         try
           if bin_pats = [] then raise Stuck else
           let lhs_pats =
             List.map (function
-                | (Bnr (o, pl, pr), c) ->
-                    (pl, Bnrl (o, c, pr))
+                | (Bnr (o, pl, pr), x) ->
+                    (pl, (o, x, pr))
                 | _ -> assert false) bin_pats
           in
           let lhs_ids =
@@ -567,31 +546,26 @@ let lr_matcher statemap states rules name =
                 setify
               in
               let rhs_pats =
-                List.map (function
-                  | (pl, Bnrl (o, c, pr)) ->
-                      (pr, Bnrr (o, pl, c))
-                  | _ -> assert false) pats
+                List.map (fun (pl, (o, x, pr)) ->
+                    (pr, (o, pl, x))) pats
               in
               Action.mk_pop
                 (gen rhs_ids rhs_pats (fun _ pats ->
                   let id_pats =
-                    List.map (function
-                      | (pr, Bnrr (o, pl, c)) ->
-                          (Bnr (o, pl, pr), c)
-                      | _ -> assert false) pats
+                    List.map (fun (pr, (o, pl, x)) ->
+                        (Bnr (o, pl, pr), x)) pats
                   in
                   k id id_pats))))
         with Stuck ->
           let atm_pats =
             List.filter (fun (pat, _) ->
-              pattern_match pat states.(id).seen) atm_pats
+                pattern_match pat states.(id).seen) atm_pats
           in
           if atm_pats = [] then raise Stuck else
           let vars =
             List.filter_map (function
                 | (Var (v, _), _) -> Some v
-                | _ -> None) atm_pats |>
-            setify
+                | _ -> None) atm_pats |> setify
           in
           match vars with
           | [] -> k id atm_pats
@@ -621,10 +595,8 @@ let lr_matcher statemap states rules name =
           Some r.pattern
         else None) rules |>
     filter_dups |>
-    List.map (fun p -> (p, Top ()))
+    List.map (fun p -> (p, ()))
   in
   gen top_ids top_pats (fun _ pats ->
       assert (pats <> []);
-      let at_top (_, c) = c = Top () in
-      assert (List.for_all at_top pats);
       Action.stop)

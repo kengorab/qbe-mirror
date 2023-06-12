@@ -113,8 +113,7 @@ module Buffer: sig
 end = struct
   type 'a t =
     { mutable size: int
-    ; mutable data: 'a array
-    }
+    ; mutable data: 'a array }
   let mk_array n = Array.make n (Obj.magic 0)
   let create ?(capacity = 10) () =
     if capacity < 0 then invalid_arg "Buffer.make";
@@ -142,10 +141,10 @@ end
 type numberer =
   { atoms: (atomic_pattern * p state) list
   ; statemap: p state StateMap.t
+  ; states: p state array
   ; mutable ops: op list
     (* memoizes the list of possible operations
-     * according to the statemap *)
-  }
+     * according to the statemap *) }
 
 let atom_state n (atm: atomic_pattern): p state =
   List.assoc atm n.atoms
@@ -155,25 +154,23 @@ let binop_state n op s1 s2 =
   try StateMap.find key n.statemap
   with Not_found -> atom_state n Tmp
 
+type id = int
+type term_data =
+  | Binop of op * id * id
+  | Leaf of atomic_pattern
+type term =
+  { id: id
+  ; data: term_data
+  ; state: p state }
+
 (* A term pool is a deduplicated set of term
  * that maintains nodes numbering using the
  * statemap passed at creation time *)
 module TermPool = struct
-  type id = int
-  type term_data =
-    | Binop of op * id * id
-    | Leaf of atomic_pattern
-  type term =
-    { id: id
-    ; data: term_data
-    ; state: p state
-    }
-
   type t =
     { terms: term Buffer.t
     ; hcons: (term_data, id) Hashtbl.t
-    ; numbr: numberer
-    }
+    ; numbr: numberer }
 
   let create numbr =
     { terms = Buffer.create ()
@@ -216,6 +213,22 @@ module TermPool = struct
         mk_binop tp op t1 t2
     | Atm atm -> mk_leaf tp atm
     | Var (_, atm) -> add_pattern tp (Atm atm)
+
+  let explode_term tp id =
+    let rec aux tms n id =
+      let t = term tp id in
+      match t.data with
+      | Leaf _ -> (n, {t with id = n} :: tms)
+      | Binop (op, id1, id2) ->
+          let n1, tms = aux tms n id1 in
+          let n = n1 + 1 in
+          let n2, tms = aux tms n id2 in
+          let n = n2 + 1 in
+          (n, { t with data = Binop (op, n1, n2)
+                     ; id = n } :: tms)
+    in
+    let n, tms = aux [] 0 id in
+    Array.of_list (List.rev tms), n
 end
 
 module R = Random
@@ -281,7 +294,7 @@ let fuzz_numberer rules numbr =
   (* fuzz until the term pool we are constructing
    * is no longer growing fast enough; or we just
    * went through sufficiently many iterations *)
-  let max_iter = 6_000_000 in
+  let max_iter = 3_000_000 in
   let low_new_rate = 1e-2 in
   let tp = TermPool.create numbr in
   let rec loop new_stats i =
@@ -352,6 +365,95 @@ let fuzz_numberer rules numbr =
   loop (1, 0, 1.0) 0;
   tp
 
+let rec run_matcher stk m (ta, id as t) =
+  let state id = ta.(id).state.id in
+  match m.Action.node with
+  | Action.Switch cases ->
+      let m =
+        try List.assoc (state id) cases
+        with Not_found -> failwith "no switch case"
+      in
+      run_matcher stk m t
+  | Action.Push (sym, m) ->
+      let l, r =
+        match ta.(id).data with
+        | Leaf _ -> failwith "push on leaf"
+        | Binop (_, l, r) -> (l, r)
+      in
+      if sym && state l > state r
+      then run_matcher (l :: stk) m (ta, r)
+      else run_matcher (r :: stk) m (ta, l)
+  | Action.Pop m -> begin
+      match stk with
+      | id :: stk -> run_matcher stk m (ta, id)
+      | [] -> failwith "pop on empty stack"
+    end
+  | Action.Set (v, m) ->
+      (v, id) :: run_matcher stk m t
+  | Action.Stop -> []
+
+let rec term_match p (ta, id) =
+  let atom_match a =
+    match ta.(id).data with
+    | Leaf a' -> pattern_match (Atm a) (Atm a')
+    | Binop _ -> pattern_match (Atm a) (Atm Tmp)
+  in
+  match p with
+  | Var (v, a) when atom_match a ->
+      Some [(v, id)]
+  | Atm a when atom_match a -> Some []
+  | (Atm _ | Var _) -> None
+  | Bnr (op, pl, pr) -> begin
+      match ta.(id).data with
+      | Binop (op', idl, idr) when op' = op ->
+          Option.bind (term_match pl (ta, idl))
+            (fun l1 ->
+               Option.map ((@) l1)
+                (term_match pr (ta, idr)))
+      | _ -> None
+    end
+
+let test_matchers tp numbr rules =
+  let {statemap = sm; states = sa; _} = numbr in
+  let matchers =
+    let htbl = Hashtbl.create (Array.length sa) in
+    List.map (fun r -> (r.name, r.pattern)) rules |>
+    group_by_fst |>
+    List.iter (fun (r, ps) ->
+      let pm = (ps, lr_matcher sm sa rules r) in
+      Array.iter (fun s ->
+          if List.mem (Top r) s.point then
+            Hashtbl.add htbl s.id pm)
+        sa);
+    htbl
+  in
+  for id = 0 to TermPool.size tp - 1 do
+    Hashtbl.find_all matchers
+      (TermPool.term tp id).state.id |>
+    List.iter (fun (ps, m) ->
+      if id land 255 = 0 then begin
+        let ratio =
+          1e2 *. float_of_int id /.
+          float_of_int (TermPool.size tp)
+        in
+        Format.printf "testing... %.1f%%@." ratio
+      end;
+      let norm = List.fast_sort compare in
+      let ok =
+        let t = TermPool.explode_term tp id in
+        let asn = norm (run_matcher [] m t) in
+        List.exists (fun p ->
+            match term_match p t with
+            | None -> false
+            | Some asn' -> asn = norm asn')
+          ps
+      in
+      if not ok then begin
+        raise FuzzError
+      end;
+    )
+  done
+
 (* -------------------- *)
 
 let make_numberer sa sm =
@@ -361,7 +463,10 @@ let make_numberer sa sm =
                 | Some a -> Some (a, s)
                 | None -> None) |>
             List.of_seq
+  ; states = sa
   ; statemap = sm
   ; ops = [] }
 
-let _tp = fuzz_numberer rules (make_numberer sa sm)
+let numbr = make_numberer sa sm
+let tp = fuzz_numberer rules numbr
+let () = test_matchers tp numbr rules
