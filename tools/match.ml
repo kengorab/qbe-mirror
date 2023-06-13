@@ -20,6 +20,7 @@ type atomic_pattern =
   | Tmp
   | AnyCon
   | Con of int64
+(* Tmp < AnyCon < Con k *)
 
 type pattern =
   | Bnr of op * pattern * pattern
@@ -109,10 +110,6 @@ let peel p x =
     else go l'
   in go [(p, Top x)]
 
-let count p l =
-  let f n x = if p x then n + 1 else n in
-  List.fold_left f 0 l
-
 let fold_pairs l1 l2 ini f =
   let rec go acc = function
     | [] -> acc
@@ -124,6 +121,9 @@ let fold_pairs l1 l2 ini f =
 
 let iter_pairs l f =
   fold_pairs l l () (fun x () -> f x)
+
+let inverse l =
+  List.map (fun (a, b) -> (b, a)) l
 
 type 'a state =
   { id: int
@@ -461,11 +461,14 @@ end = struct
   let rec pp_node fmt = function
     | Switch l ->
         fprintf fmt "@[<v>@[<v2>switch{";
-        let pp_case pp_c (c, a) =
-          fprintf fmt
-            "@,@[<2>→%a:@ @[%a@]@]" pp_c c pp a
+        let pp_case (c, a) =
+          let pp_sep fmt () = fprintf fmt "," in
+          fprintf fmt "@,@[<2>→%a:@ @[%a@]@]"
+            (pp_print_list ~pp_sep pp_print_int)
+            c pp a
         in
-        List.iter (pp_case pp_print_int) l;
+        inverse l |> group_by_fst |> inverse |>
+          List.iter pp_case;
         fprintf fmt "@]@,}@]"
     | Push (true, a) -> fprintf fmt "pushsym@ %a" pp a
     | Push (false, a) -> fprintf fmt "push@ %a" pp a
@@ -491,8 +494,7 @@ let lr_matcher statemap states rules name =
           List.filter (fun (a, b) -> a <> b) l |>
           List.partition (fun (a, b) -> a < b)
         in
-        let l2 = List.map (fun (a, b) -> (b, a)) l2 in
-        setify l1 = setify l2)
+        setify l1 = setify (inverse l2))
       rmap.(id)
   in
   let exception Stuck in
@@ -502,10 +504,10 @@ let lr_matcher statemap states rules name =
    * that will, given any such term, assign values
    * for the Var nodes of one pattern in pats *)
   let rec gen
-    : 'a. int list -> (pattern * 'a) list
-          -> (int -> (pattern * 'a) list -> Action.t)
-          -> Action.t
-    = fun ids pats k ->
+  : 'a. int list -> (pattern * 'a) list
+        -> (int -> (pattern * 'a) list -> Action.t)
+        -> Action.t
+  = fun ids pats k ->
     Action.mk_switch ids (fun id ->
         let id_sym = symmetric id in
         let id_ops =

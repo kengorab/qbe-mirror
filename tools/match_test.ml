@@ -146,7 +146,7 @@ type numberer =
     (* memoizes the list of possible operations
      * according to the statemap *) }
 
-let atom_state n (atm: atomic_pattern): p state =
+let atom_state n atm =
   List.assoc atm n.atoms
 
 let binop_state n op s1 s2 =
@@ -162,6 +162,18 @@ type term =
   { id: id
   ; data: term_data
   ; state: p state }
+
+let pp_term fmt (ta, id) =
+  let open Format in
+  let rec pp fmt id =
+    match ta.(id).data with
+    | Leaf (Con c) -> printf "%Ld" c
+    | Leaf AnyCon -> printf "$%d" id
+    | Leaf Tmp -> printf "%%%d" id
+    | Binop (op, id1, id2) ->
+        printf "@[(%s@%d @[<hov>%a@ %a@])@]"
+          (show_op op) id pp id1 pp id2
+  in pp fmt id
 
 (* A term pool is a deduplicated set of term
  * that maintains nodes numbering using the
@@ -271,8 +283,7 @@ let term_pick ~numbr =
       let s2, t2 = gen (depth - 1) in
       ( binop_state numbr op s1 s2
       , Bnr (op, t1, t2) )
-  in
-  fun ~depth -> gen depth
+  in fun ~depth -> gen depth
 
 exception FuzzError
 
@@ -281,6 +292,24 @@ let rec pattern_depth = function
       1 + max (pattern_depth p1) (pattern_depth p2)
   | Atm _ -> 0
   | Var (_, atm) -> pattern_depth (Atm atm)
+
+let (%) a b =
+  1e2 *. float_of_int a /. float_of_int b
+
+let progress ?(width = 50) msg pct =
+  Format.printf "\x1b[2K\r%!";
+  let progress_bar fmt =
+    let n =
+      let fwidth = float_of_int width in
+      1 + int_of_float (pct *. fwidth /. 1e2)
+    in
+    Format.fprintf fmt "  [%s%s] %.0f%%@?"
+      (String.make n ':')
+      (String.make (max 0 (width - n)) '.')
+      pct
+  in
+  Format.kfprintf progress_bar
+    Format.std_formatter msg
 
 let fuzz_numberer rules numbr =
   (* pick twice the max pattern depth so we
@@ -294,7 +323,7 @@ let fuzz_numberer rules numbr =
   (* fuzz until the term pool we are constructing
    * is no longer growing fast enough; or we just
    * went through sufficiently many iterations *)
-  let max_iter = 3_000_000 in
+  let max_iter = 1_000_000 in
   let low_new_rate = 1e-2 in
   let tp = TermPool.create numbr in
   let rec loop new_stats i =
@@ -304,14 +333,12 @@ let fuzz_numberer rules numbr =
     (* periodically update stats *)
     let new_stats =
       let (num, cnt, rate) = new_stats in
-      if num land 255 = 0 then
+      if num land 1023 = 0 then
         let rate =
-          0.5 *. (rate +. float_of_int cnt /. 255.)
+          0.5 *. (rate +. float_of_int cnt /. 1023.)
         in
-        let () =
-          Format.printf "fuzzing... i=% 7d r=%.1f%%@."
-            i (rate *. 1e2)
-        in
+        progress "fuzzing... r=%.1f%%"
+          (i % max_iter) (rate *. 1e2);
         (num + 1, 0, rate)
       else new_stats
     in
@@ -338,7 +365,7 @@ let fuzz_numberer rules numbr =
         let pp_sep fmt () = fprintf fmt ",@ " in
         pp_print_list ~pp_sep pp_print_string
       in
-      printf "@[<v2>fuzz error for %s"
+      printf "@.@[<v2>fuzz error for %s"
         (show_pattern term);
       printf "@ @[state matched: %a@]"
         pp_str_list state_matched;
@@ -363,6 +390,9 @@ let fuzz_numberer rules numbr =
       loop new_stats (i + 1)
   in
   loop (1, 0, 1.0) 0;
+  Format.printf "@.@[fuzz complete: %.3fMiB@]@."
+    (float_of_int (Obj.reachable_words (Obj.repr tp))
+     /.  128. /. 1024.);
   tp
 
 let rec run_matcher stk m (ta, id as t) =
@@ -393,6 +423,9 @@ let rec run_matcher stk m (ta, id as t) =
   | Action.Stop -> []
 
 let rec term_match p (ta, id) =
+  let (|>>) x f =
+    match x with None -> None | Some x -> f x
+  in
   let atom_match a =
     match ta.(id).data with
     | Leaf a' -> pattern_match (Atm a) (Atm a')
@@ -406,53 +439,86 @@ let rec term_match p (ta, id) =
   | Bnr (op, pl, pr) -> begin
       match ta.(id).data with
       | Binop (op', idl, idr) when op' = op ->
-          Option.bind (term_match pl (ta, idl))
-            (fun l1 ->
-               Option.map ((@) l1)
-                (term_match pr (ta, idr)))
+          term_match pl (ta, idl) |>> fun l1 ->
+          term_match pr (ta, idr) |>> fun l2 ->
+          Some (l1 @ l2)
       | _ -> None
     end
 
 let test_matchers tp numbr rules =
   let {statemap = sm; states = sa; _} = numbr in
+  let total = ref 0 in
   let matchers =
     let htbl = Hashtbl.create (Array.length sa) in
     List.map (fun r -> (r.name, r.pattern)) rules |>
     group_by_fst |>
     List.iter (fun (r, ps) ->
+      total := !total + List.length ps;
       let pm = (ps, lr_matcher sm sa rules r) in
-      Array.iter (fun s ->
-          if List.mem (Top r) s.point then
-            Hashtbl.add htbl s.id pm)
-        sa);
+      sa |> Array.iter (fun s ->
+        if List.mem (Top r) s.point then
+          Hashtbl.add htbl s.id pm));
     htbl
   in
+  let seen = Hashtbl.create !total in
   for id = 0 to TermPool.size tp - 1 do
+    if id land 1023 = 0 ||
+       id = TermPool.size tp - 1 then begin
+      progress
+        "testing... np=%d t=%.1f%%"
+        (id % TermPool.size tp) !total
+        (Hashtbl.length seen % !total)
+    end;
+    let t = TermPool.explode_term tp id in
     Hashtbl.find_all matchers
       (TermPool.term tp id).state.id |>
     List.iter (fun (ps, m) ->
-      if id land 255 = 0 then begin
-        let ratio =
-          1e2 *. float_of_int id /.
-          float_of_int (TermPool.size tp)
-        in
-        Format.printf "testing... %.1f%%@." ratio
-      end;
       let norm = List.fast_sort compare in
       let ok =
-        let t = TermPool.explode_term tp id in
-        let asn = norm (run_matcher [] m t) in
-        List.exists (fun p ->
-            match term_match p t with
-            | None -> false
-            | Some asn' -> asn = norm asn')
-          ps
+        match norm (run_matcher [] m t) with
+        | asn -> `Match (List.exists (fun p ->
+              match term_match p t with
+              | None -> false
+              | Some asn' ->
+                  if asn = norm asn' then begin
+                    Hashtbl.replace seen p ();
+                    true
+                  end else false) ps)
+        | exception e -> `RunFailure e
       in
-      if not ok then begin
+      if ok <> `Match true then begin
+        let open Format in
+        let pp_asn fmt asn =
+          fprintf fmt "@[<h>";
+          pp_print_list
+            ~pp_sep:(fun fmt () -> fprintf fmt ";@ ")
+            (fun fmt (v, d) ->
+              fprintf fmt "@[%s←%d@]" v d)
+            fmt asn;
+          fprintf fmt "@]"
+        in
+        printf "@.@[<v2>matcher error for";
+        printf "@ @[%a@]" pp_term t;
+        begin match ok with
+        | `RunFailure e ->
+            printf "@ @[exception: %s@]"
+              (Printexc.to_string e)
+        | `Match (* false *) _ ->
+            let asn = run_matcher [] m t in
+            printf "@ @[assignment: %a@]"
+              pp_asn asn;
+            printf "@ @[<v2>could not match";
+            List.iter (fun p ->
+                printf "@ + @[%s@]"
+                  (show_pattern p)) ps;
+            printf "@]"
+        end;
+        printf "@]@.";
         raise FuzzError
-      end;
-    )
-  done
+      end)
+  done;
+  Format.printf "@.@[testing complete@]@.";
+  ()
 
 (* -------------------- *)
 
