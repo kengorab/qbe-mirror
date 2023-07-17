@@ -271,8 +271,8 @@ let generate_table rl =
         else normalize (con @ l)
       in
       let s = {id = -1; seen; point} in
-      let flag, _ = StateSet.add states s in
-      assert (flag = `Added)
+      let _ = StateSet.add states s in
+      ()
     ) ground
   in
   (* setup loop state *)
@@ -508,14 +508,14 @@ let lr_matcher statemap states rules name =
         -> (int -> (pattern * 'a) list -> Action.t)
         -> Action.t
   = fun ids pats k ->
-    Action.mk_switch ids (fun id ->
-        let id_sym = symmetric id in
+    Action.mk_switch (setify ids) (fun id ->
+        let sym = symmetric id in
         let id_ops =
-          let normalize (o, l) =
-            (o, List.filter (fun (a, b) -> a <= b) l)
-          in
-          if id_sym then
-            List.map normalize rmap.(id)
+          if sym then
+            let ordered (a, b) = a <= b in
+            List.map (fun (o, l) ->
+                (o, List.filter ordered l))
+              rmap.(id)
           else rmap.(id)
         in
         (* consider only the patterns that are
@@ -525,39 +525,32 @@ let lr_matcher statemap states rules name =
             | Bnr (o, _, _), _ ->
                 List.exists (fun (o', _) -> o' = o) id_ops
             | _ -> true) pats |>
-          List.partition (fun (pat, x) -> is_atomic pat)
+          List.partition (fun (pat, _) -> is_atomic pat)
         in
+        let id_ops = List.concat_map snd id_ops in
         try
           if bin_pats = [] then raise Stuck else
-          let lhs_pats =
+          let binop_id = id in
+          let ids = List.map fst id_ops
+          and pats =
             List.map (function
                 | (Bnr (o, pl, pr), x) ->
                     (pl, (o, x, pr))
                 | _ -> assert false) bin_pats
-          in
-          let lhs_ids =
-            List.concat_map snd id_ops |>
-            List.map fst |> setify
-          in
-          Action.mk_push ~sym:id_sym
-            (gen lhs_ids lhs_pats (fun lhs_id pats ->
-              let rhs_ids =
-                List.concat_map snd id_ops |>
-                List.filter_map (fun (l, r) ->
-                    if l = lhs_id then Some r else None) |>
-                setify
-              in
-              let rhs_pats =
-                List.map (fun (pl, (o, x, pr)) ->
-                    (pr, (o, pl, x))) pats
-              in
-              Action.mk_pop
-                (gen rhs_ids rhs_pats (fun _ pats ->
-                  let id_pats =
-                    List.map (fun (pr, (o, pl, x)) ->
-                        (Bnr (o, pl, pr), x)) pats
-                  in
-                  k id id_pats))))
+          and k_lhs id pats =
+            let ids =
+              List.filter_map (fun (l, r) ->
+                  if l = id then Some r else None) id_ops
+            and pats =
+              List.map (fun (pl, (o, x, pr)) ->
+                  (pr, (o, pl, x))) pats
+            and k_rhs _rhs_id pats =
+              let pats =
+                List.map (fun (pr, (o, pl, x)) ->
+                    (Bnr (o, pl, pr), x)) pats
+              in k binop_id pats
+            in Action.mk_pop (gen ids pats k_rhs)
+          in Action.mk_push ~sym (gen ids pats k_lhs)
         with Stuck ->
           let atm_pats =
             List.filter (fun (pat, _) ->
@@ -576,12 +569,11 @@ let lr_matcher statemap states rules name =
   in
   (* generate a matcher for the rule *)
   let top_ids =
-    Array.to_seq states |>
-    Seq.filter_map (fun {id; point = p; _} ->
+    Array.to_list states |>
+    List.filter_map (fun {id; point = p; _} ->
         if List.exists ((=) (Top name)) p then
           Some id
-        else None) |>
-    List.of_seq
+        else None)
   in
   let rec filter_dups pats =
     match pats with

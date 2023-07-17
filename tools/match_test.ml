@@ -66,9 +66,13 @@ let rules =
   (* ------------------------------- *)
   | `X64Addr ->
     (* o + b *)
-    (* rule "ob" (Bnr (oa, Atm Tmp, Atm AnyCon)) *) []
+    rule "ob" (Bnr (oa, Atm Tmp, Atm AnyCon))
     @ (* b + s * i *)
-    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", AnyCon), vs)))
+    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 2L), vs)))
+    @ 
+    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 4L), vs)))
+    @ 
+    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 8L), vs)))
     @  (* b + s *)
     rule "bs1" (Bnr (oa, vb, vs))
     @ (* o + s * i *)
@@ -77,7 +81,13 @@ let rules =
     rule "bos1" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb), vs))
     @ (* b + o + s * i *)
     rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
-                         Bnr (om, Var ("m", AnyCon), vs)))
+                         Bnr (om, Var ("m", Con 2L), vs)))
+    @
+    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
+                         Bnr (om, Var ("m", Con 4L), vs)))
+    @
+    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
+                         Bnr (om, Var ("m", Con 8L), vs)))
   (* ------------------------------- *)
   | `Add3 ->
     [ { name = "add"
@@ -171,8 +181,9 @@ let pp_term fmt (ta, id) =
     | Leaf AnyCon -> printf "$%d" id
     | Leaf Tmp -> printf "%%%d" id
     | Binop (op, id1, id2) ->
-        printf "@[(%s@%d @[<hov>%a@ %a@])@]"
-          (show_op op) id pp id1 pp id2
+        printf "@[(%s@%d:%d @[<hov>%a@ %a@])@]"
+          (show_op op) id ta.(id).state.id
+          pp id1 pp id2
   in pp fmt id
 
 (* A term pool is a deduplicated set of term
@@ -305,7 +316,7 @@ let progress ?(width = 50) msg pct =
     in
     Format.fprintf fmt "  [%s%s] %.0f%%@?"
       (String.make n ':')
-      (String.make (max 0 (width - n)) '.')
+      (String.make (max 0 (width - n)) '-')
       pct
   in
   Format.kfprintf progress_bar
@@ -390,7 +401,7 @@ let fuzz_numberer rules numbr =
       loop new_stats (i + 1)
   in
   loop (1, 0, 1.0) 0;
-  Format.printf "@.@[fuzz complete: %.3fMiB@]@."
+  Format.printf "@[ [%.3fMiB]@]@."
     (float_of_int (Obj.reachable_words (Obj.repr tp))
      /.  128. /. 1024.);
   tp
@@ -517,8 +528,7 @@ let test_matchers tp numbr rules =
         raise FuzzError
       end)
   done;
-  Format.printf "@.@[testing complete@]@.";
-  ()
+  Format.printf "@."
 
 (* -------------------- *)
 
