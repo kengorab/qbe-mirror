@@ -8,6 +8,9 @@ type op_base =
   | Oshr
 type op = cls * op_base
 
+let op_bases =
+  [Oadd; Osub; Omul; Oor; Oshl; Oshr]
+
 let commutative = function
   | (_, (Oadd | Omul | Oor)) -> true
   | (_, _) -> false
@@ -31,14 +34,17 @@ let is_atomic = function
   | (Atm _ | Var _) -> true
   | _ -> false
 
+let show_op_base o =
+  match o with
+  | Oadd -> "add"
+  | Osub -> "sub"
+  | Omul -> "mul"
+  | Oor -> "or"
+  | Oshl -> "shl"
+  | Oshr -> "shr"
+
 let show_op (k, o) =
-  (match o with
-   | Oadd -> "add"
-   | Osub -> "sub"
-   | Omul -> "mul"
-   | Oor -> "or"
-   | Oshl -> "shl"
-   | Oshr -> "shr") ^
+  show_op_base o ^
   (match k with
    | Kw -> "w"
    | Kl -> "l"
@@ -245,6 +251,12 @@ module StateMap = struct
               (o, (sl.id, sr.id)) :: rmap.(id)
       ) sm;
     Array.map group_by_fst rmap
+  let by_ops sm =
+    fold (fun tk s ops ->
+        match tk with
+        | K (op, l, r) ->
+            (op, ((l.id, r.id), s.id)) :: ops)
+      sm [] |> group_by_fst
 end
 
 type rule =
@@ -508,64 +520,67 @@ let lr_matcher statemap states rules name =
         -> (int -> (pattern * 'a) list -> Action.t)
         -> Action.t
   = fun ids pats k ->
-    Action.mk_switch (setify ids) (fun id ->
-        let sym = symmetric id in
-        let id_ops =
-          if sym then
-            let ordered (a, b) = a <= b in
-            List.map (fun (o, l) ->
-                (o, List.filter ordered l))
-              rmap.(id)
-          else rmap.(id)
-        in
-        (* consider only the patterns that are
-         * compatible with the current id *)
-        let atm_pats, bin_pats =
-          List.filter (function
-            | Bnr (o, _, _), _ ->
-                List.exists (fun (o', _) -> o' = o) id_ops
-            | _ -> true) pats |>
-          List.partition (fun (pat, _) -> is_atomic pat)
-        in
-        let id_ops = List.concat_map snd id_ops in
-        try
-          if bin_pats = [] then raise Stuck else
-          let binop_id = id in
-          let ids = List.map fst id_ops
-          and pats =
-            List.map (function
-                | (Bnr (o, pl, pr), x) ->
-                    (pl, (o, x, pr))
-                | _ -> assert false) bin_pats
-          and k_lhs id pats =
-            let ids =
-              List.filter_map (fun (l, r) ->
-                  if l = id then Some r else None) id_ops
-            and pats =
-              List.map (fun (pl, (o, x, pr)) ->
-                  (pr, (o, pl, x))) pats
-            and k_rhs _rhs_id pats =
-              let pats =
-                List.map (fun (pr, (o, pl, x)) ->
-                    (Bnr (o, pl, pr), x)) pats
-              in k binop_id pats
-            in Action.mk_pop (gen ids pats k_rhs)
-          in Action.mk_push ~sym (gen ids pats k_lhs)
-        with Stuck ->
-          let atm_pats =
-            List.filter (fun (pat, _) ->
-                pattern_match pat states.(id).seen) atm_pats
-          in
-          if atm_pats = [] then raise Stuck else
-          let vars =
-            List.filter_map (function
-                | (Var (v, _), _) -> Some v
-                | _ -> None) atm_pats |> setify
-          in
-          match vars with
-          | [] -> k id atm_pats
-          | [v] -> Action.mk_set v (k id atm_pats)
-          | _ -> failwith "ambiguous var match")
+    Action.mk_switch (setify ids) @@ fun id ->
+    let sym = symmetric id in
+    let id_ops =
+      if sym then
+        let ordered (a, b) = a <= b in
+        List.map (fun (o, l) ->
+            (o, List.filter ordered l)) rmap.(id)
+      else rmap.(id)
+    in
+    (* consider only the patterns that are
+     * compatible with the current id *)
+    let atm_pats, bin_pats =
+      List.filter (function
+        | Bnr (o, _, _), _ ->
+            List.exists (fun (o', _) -> o' = o) id_ops
+        | _ -> true) pats |>
+      List.partition (fun (pat, _) -> is_atomic pat)
+    in
+    let id_ops = List.concat_map snd id_ops in
+    try
+      let gen_then ids pats f k =
+        f (gen ids pats k) in
+      if bin_pats = [] then raise Stuck else
+      let binop_id = id in
+      let ids = List.map fst id_ops
+      and pats =
+        List.map (function
+            | (Bnr (o, pl, pr), x) ->
+                (pl, (o, x, pr))
+            | _ -> assert false) bin_pats
+      in
+      gen_then ids pats (Action.mk_push ~sym)
+        @@ fun id pats ->
+      let ids =
+        List.filter_map (fun (l, r) ->
+            if l = id then Some r else None) id_ops
+      and pats =
+        List.map (fun (pl, (o, x, pr)) ->
+            (pr, (o, pl, x))) pats
+      in
+      gen_then ids pats Action.mk_pop
+        @@ fun _rhs_id pats ->
+      k binop_id
+        (List.map (fun (pr, (o, pl, x)) ->
+             (Bnr (o, pl, pr), x)) pats)
+    with Stuck ->
+      let atm_pats =
+        let seen = states.(id).seen in
+        List.filter (fun (pat, _) ->
+            pattern_match pat seen) atm_pats
+      in
+      if atm_pats = [] then raise Stuck else
+      let vars =
+        List.filter_map (function
+            | (Var (v, _), _) -> Some v
+            | _ -> None) atm_pats |> setify
+      in
+      match vars with
+      | [] -> k id atm_pats
+      | [v] -> Action.mk_set v (k id atm_pats)
+      | _ -> failwith "ambiguous var match"
   in
   (* generate a matcher for the rule *)
   let top_ids =
@@ -594,3 +609,22 @@ let lr_matcher statemap states rules name =
   gen top_ids top_pats (fun _ pats ->
       assert (pats <> []);
       Action.stop)
+
+type numberer =
+  { atoms: (atomic_pattern * p state) list
+  ; statemap: p state StateMap.t
+  ; states: p state array
+  ; mutable ops: op list
+    (* memoizes the list of possible operations
+     * according to the statemap *) }
+
+let make_numberer sa sm =
+  { atoms = Array.to_seq sa |>
+            Seq.filter_map (fun s ->
+                match get_atomic s.seen with
+                | Some a -> Some (a, s)
+                | None -> None) |>
+            List.of_seq
+  ; states = sa
+  ; statemap = sm
+  ; ops = [] }

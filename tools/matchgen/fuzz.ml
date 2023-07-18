@@ -1,116 +1,5 @@
-#use "match.ml";;
-
-(* unit tests *)
-
-let test_pattern_match =
-  let pm = pattern_match
-  and nm = fun x y -> not (pattern_match x y) in
-  begin
-    assert (nm (Atm Tmp) (Atm (Con 42L)));
-    assert (pm (Atm AnyCon) (Atm (Con 42L)));
-    assert (nm (Atm (Con 42L)) (Atm AnyCon));
-    assert (nm (Atm (Con 42L)) (Atm Tmp));
-  end
-
-let test_peel =
-  let o = Kw, Oadd in
-  let p = Bnr (o, Bnr (o, Atm Tmp, Atm Tmp),
-                  Atm (Con 42L)) in
-  let l = peel p () in
-  let () = assert (List.length l = 3) in
-  let atomic_p (p, _) =
-    match p with Atm _ -> true | _ -> false in
-  let () = assert (List.for_all atomic_p l) in
-  let l = List.map (fun (p, c) -> fold_cursor c p) l in
-  let () = assert (List.for_all ((=) p) l) in
-  ()
-
-let test_fold_pairs =
-  let l = [1; 2; 3; 4; 5] in
-  let p = fold_pairs l l [] (fun a b -> a :: b) in
-  let () = assert (List.length p = 25) in
-  let p = sort_uniq compare p in
-  let () = assert (List.length p = 25) in
-  ()
-
-(* test pattern & state *)
-
-let print_sm =
-  StateMap.iter (fun k s' ->
-    match k with
-    | K (o, sl, sr) ->
-        let top =
-          List.fold_left (fun top c ->
-            match c with
-            | Top r -> top ^ " " ^ r
-            | _ -> top) "" s'.point
-        in
-        Printf.printf
-          "(%s %d %d) -> %d%s\n"
-          (show_op o)
-          sl.id sr.id s'.id top)
-
-let rules =
-  let oa = Kl, Oadd in
-  let om = Kl, Omul in
-  let va = Var ("a", Tmp)
-  and vb = Var ("b", Tmp)
-  and vc = Var ("c", Tmp)
-  and vs = Var ("s", Tmp) in
-  let rule name pattern =
-    List.map
-      (fun pattern -> {name; pattern})
-      (ac_equiv pattern)
-  in
-  match `X64Addr with
-  (* ------------------------------- *)
-  | `X64Addr ->
-    (* o + b *)
-    rule "ob" (Bnr (oa, Atm Tmp, Atm AnyCon))
-    @ (* b + s * i *)
-    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 2L), vs)))
-    @ 
-    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 4L), vs)))
-    @ 
-    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 8L), vs)))
-    @  (* b + s *)
-    rule "bs1" (Bnr (oa, vb, vs))
-    @ (* o + s * i *)
-    (* rule "os" (Bnr (oa, Atm AnyCon, Bnr (om, Atm (Con 4L), Atm Tmp))) *) []
-    @ (* b + o + s *)
-    rule "bos1" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb), vs))
-    @ (* b + o + s * i *)
-    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
-                         Bnr (om, Var ("m", Con 2L), vs)))
-    @
-    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
-                         Bnr (om, Var ("m", Con 4L), vs)))
-    @
-    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
-                         Bnr (om, Var ("m", Con 8L), vs)))
-  (* ------------------------------- *)
-  | `Add3 ->
-    [ { name = "add"
-      ; pattern = Bnr (oa, va, Bnr (oa, vb, vc)) } ] @
-    [ { name = "add"
-      ; pattern = Bnr (oa, Bnr (oa, va, vb), vc) } ]
-
-
-let sa, sm = generate_table rules
-let () =
-  Array.iteri (fun i s ->
-      Format.printf "@[state %d: %s@]@."
-        i (show_pattern s.seen))
-    sa
-let () = print_sm sm; flush stdout
-
-let matcher = lr_matcher sm sa rules "bos" (* XXX *)
-let () = Format.printf "@[<v>%a@]@." Action.pp matcher
-let () = Format.printf "@[matcher size: %d@]@." (Action.size matcher)
-
-(* -------------------- *)
-
 (* fuzz the tables and matchers generated *)
+open Match
 
 module Buffer: sig
   type 'a t
@@ -147,14 +36,6 @@ end = struct
     b.size <- sz + 1;
     set b sz x
 end
-
-type numberer =
-  { atoms: (atomic_pattern * p state) list
-  ; statemap: p state StateMap.t
-  ; states: p state array
-  ; mutable ops: op list
-    (* memoizes the list of possible operations
-     * according to the statemap *) }
 
 let atom_state n atm =
   List.assoc atm n.atoms
@@ -530,19 +411,4 @@ let test_matchers tp numbr rules =
   done;
   Format.printf "@."
 
-(* -------------------- *)
 
-let make_numberer sa sm =
-  { atoms = Array.to_seq sa |>
-            Seq.filter_map (fun s ->
-                match get_atomic s.seen with
-                | Some a -> Some (a, s)
-                | None -> None) |>
-            List.of_seq
-  ; states = sa
-  ; statemap = sm
-  ; ops = [] }
-
-let numbr = make_numberer sa sm
-let tp = fuzz_numberer rules numbr
-let () = test_matchers tp numbr rules
