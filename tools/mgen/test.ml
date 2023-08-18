@@ -98,7 +98,7 @@ let rules =
       ; pattern = Bnr (oa, Bnr (oa, va, vb), vc) } ]
 
 
-let sa, sm = generate_table rules
+let sa, am, sm = generate_table rules
 let () =
   Array.iteri (fun i s ->
       Format.printf "@[state %d: %s@]@."
@@ -110,7 +110,7 @@ let matcher = lr_matcher sm sa rules "bos" (* XXX *)
 let () = Format.printf "@[<v>%a@]@." Action.pp matcher
 let () = Format.printf "@[matcher size: %d@]@." (Action.size matcher)
 
-let numbr = make_numberer sa sm
+let numbr = make_numberer sa am sm
 let () = emit_numberer {pfx = ""; static = true} stdout numbr
 (*
 let tp = fuzz_numberer rules numbr

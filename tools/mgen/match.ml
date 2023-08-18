@@ -275,6 +275,7 @@ let generate_table rl =
     try List.assoc x l with Not_found -> d in
   let tmp = find (Atm Tmp) [] ground in
   let con = find (Atm AnyCon) [] ground in
+  let atoms = ref [] in
   let () =
     List.iter (fun (seen, l) ->
       let point =
@@ -283,8 +284,10 @@ let generate_table rl =
         else normalize (con @ l)
       in
       let s = {id = -1; seen; point} in
-      let _ = StateSet.add states s in
-      ()
+      let _, s = StateSet.add states s in
+      match get_atomic seen with
+      | Some atm -> atoms := (atm, s) :: !atoms
+      | None -> ()
     ) ground
   in
   (* setup loop state *)
@@ -315,7 +318,7 @@ let generate_table rl =
     List.sort (fun s s' -> compare s.id s'.id) |>
     Array.of_list
   in
-  (states, !map)
+  (states, !atoms, !map)
 
 let intersperse x l =
   let rec go left right out =
@@ -618,13 +621,11 @@ type numberer =
     (* memoizes the list of possible operations
      * according to the statemap *) }
 
-let make_numberer sa sm =
-  { atoms = Array.to_seq sa |>
-            Seq.filter_map (fun s ->
-                match get_atomic s.seen with
-                | Some a -> Some (a, s)
-                | None -> None) |>
-            List.of_seq
+let make_numberer sa am sm =
+  { atoms = am
   ; states = sa
   ; statemap = sm
   ; ops = [] }
+
+let atom_state n atm =
+  List.assoc atm n.atoms

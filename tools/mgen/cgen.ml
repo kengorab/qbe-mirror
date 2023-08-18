@@ -27,7 +27,7 @@ type case =
   { swap: bool
   ; code: case_code }
 
-let cgen_case nstates map =
+let cgen_case tmp nstates map =
   let cgen_test ids =
     match ids with
     | [id] -> Eq id
@@ -75,7 +75,7 @@ let cgen_case nstates map =
         IfThen
           { test = And (pl, pr)
           ; cif = Return st
-          ; cthen = Some (Return 0) } }
+          ; cthen = Some (Return tmp) } }
   with BailToTable ->
     { swap = symmetric
     ; code = Table map }
@@ -88,13 +88,11 @@ let emit_swap oc i =
   let indent n =
     pf "%s" (String.sub "\t\t\t\t" 0 n) in
   let pfi n m = indent n; pf m in
-  pfi i "if (l < r) {\n";
-  pfi (i+1) "t = l;\n";
-  pfi (i+1) "l = r;\n";
-  pfi (i+1) "r = t;\n";
-  pfi i "}\n"
+  pfi i "if (l < r)\n";
+  pfi (i+1) "t = l, l = r, r = t;\n"
 
-let gen_tables oc i pfx nstates (op, c) =
+let gen_tables oc tmp pfx nstates (op, c) =
+  let i = 1 in
   let pf m = Printf.fprintf oc m in
   let indent n =
     pf "%s" (String.sub "\t\t\t\t" 0 n) in
@@ -126,7 +124,7 @@ let gen_tables oc i pfx nstates (op, c) =
               begin
                 pf "%02d"
                   (try List.assoc (l,r) map
-                   with Not_found -> 0); (*FIXME*)
+                   with Not_found -> tmp);
                 pf ",";
               end
           done;
@@ -156,6 +154,7 @@ let emit_case oc pfx no_swap (op, c) =
     | Eq id -> fpf oc "%a == %d" side s id
     | Ge id -> fpf oc "%d <= %a" id side s
   in
+  let base = pfx ^ show_op op in
   let swap = c.swap in
   let ntables = ref 0 in
   let rec code i c =
@@ -163,7 +162,6 @@ let emit_case oc pfx no_swap (op, c) =
     | Return id -> pfi i "return %d;\n" id
     | Table map ->
         let name =
-          let base = pfx ^ show_op op in
           if !ntables = 0 then base else
           base ^ string_of_int !ntables
         in
@@ -190,28 +188,99 @@ let emit_case oc pfx no_swap (op, c) =
 
 let emit_numberer opts oc n =
   let pf m = Printf.fprintf oc m in
+  let tmp = (atom_state n Tmp).id in
+  let con = (atom_state n AnyCon).id in
   let nst = Array.length n.states in
   let cases =
     StateMap.by_ops n.statemap |>
     List.map (fun (op, map) ->
-        (op, cgen_case nst map))
+        (op, cgen_case tmp nst map))
   in
-  let no_swap =
+  let all_swap =
     List.for_all (fun (_, c) -> c.swap) cases in
+  (* opn() *)
   if opts.static then pf "static ";
   pf "int\n";
   pf "%sopn(int op, int l, int r)\n" opts.pfx;
   pf "{\n";
-  cases |> List.iter (gen_tables oc 1 opts.pfx nst);
-  if List.exists (fun (_, c) -> c.swap) cases
-  then begin
-    pf "\tint t;\n";
-    pf "\n";
-  end;
-  if no_swap then emit_swap oc 1;
+  cases |> List.iter (gen_tables oc tmp opts.pfx nst);
+  if List.exists (fun (_, c) -> c.swap) cases then
+    pf "\tint t;\n\n";
+  if all_swap then emit_swap oc 1;
   pf "\tswitch (op) {\n";
-  cases |> List.iter (emit_case oc opts.pfx no_swap);
+  cases |> List.iter (emit_case oc opts.pfx all_swap);
   pf "\tdefault:\n";
-  pf "\t\treturn 0;\n";
+  pf "\t\treturn %d;\n" tmp;
+  pf "\t}\n";
+  pf "}\n\n";
+  (* refn() *)
+  if opts.static then pf "static ";
+  pf "int\n";
+  pf "%srefn(Ref r, TNum *tn, Con *con)\n" opts.pfx;
+  pf "{\n";
+  let cons =
+    List.filter_map (function
+        | (Con c, s) -> Some (c, s.id)
+        | _ -> None)
+      n.atoms
+  in
+  if cons <> [] then
+    pf "\tint64_t n;\n\n";
+  pf "\tswitch (rtype(r)) {\n";
+  pf "\tcase RTmp:\n";
+  if tmp <> 0 then begin
+    assert 
+      (List.exists (fun (_, s) ->
+           s.id = 0
+         ) n.atoms &&
+       (* no temp should ever get state 0 *)
+       List.for_all (fun (a, s) ->
+           s.id <> 0 ||
+           match a with
+           | AnyCon | Con _ -> true
+           | _ -> false
+         ) n.atoms);
+    pf "\t\tif (!tn[r.val].n)\n";
+    pf "\t\t\ttn[r.val].n = %d;\n" tmp;
+  end;
+  pf "\t\treturn tn[r.val].n;\n";
+  pf "\tcase RCon:\n";
+  if cons <> [] then begin
+    pf "\t\tif (con[r.val].type != CBits)\n";
+    pf "\t\t\treturn %d;\n" con;
+    pf "\t\tn = con[r.val].bits.i;\n";
+    cons |> inverse |> group_by_fst
+    |> List.iter (fun (id, cs) ->
+        let wid = ref 20 in
+        let fst = ref true in
+        pf "\t\tif (";
+        cs |> List.iter (fun c ->
+            let w =
+              (if !fst then 0 else 4) + 5 +
+              (if c < 0L then 1 else 0) +
+              (if c = 0L then 1 else
+               Float.(
+                 Int64.to_float c |> abs
+                 |> log10 |> ceil |> to_int))
+            in
+            if !wid + w > 60 then begin
+              pf "\n\t\t";
+              wid := 15;
+            end;
+            if not !fst then begin
+              if !wid <> 15 then pf " ";
+              pf "|| ";
+            end;
+            pf "n == %Ld" c;
+            wid := !wid + w;
+            fst := false;
+          );
+        pf ")\n";
+        pf "\t\t\treturn %d;\n" id
+      );
+  end;
+  pf "\t\treturn %d;\n" con;
+  pf "\tdefault:\n";
+  pf "\t\tdie(\"constant or temporary expected\");\n";
   pf "\t}\n";
   pf "}\n"

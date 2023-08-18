@@ -37,9 +37,6 @@ end = struct
     set b sz x
 end
 
-let atom_state n atm =
-  List.assoc atm n.atoms
-
 let binop_state n op s1 s2 =
   let key = K (op, s1, s2) in
   try StateMap.find key n.statemap
