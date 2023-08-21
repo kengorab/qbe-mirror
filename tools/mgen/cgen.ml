@@ -1,8 +1,9 @@
 open Match
 
-type opts =
+type options =
   { pfx: string
-  ; static: bool }
+  ; static: bool
+  ; oc: out_channel }
 
 type side = L | R
 
@@ -186,8 +187,8 @@ let emit_case oc pfx no_swap (op, c) =
     emit_swap oc 2;
   code 2 c.code
 
-let emit_numberer opts oc n =
-  let pf m = Printf.fprintf oc m in
+let emit_numberer opts n =
+  let pf m = Printf.fprintf opts.oc m in
   let tmp = (atom_state n Tmp).id in
   let con = (atom_state n AnyCon).id in
   let nst = Array.length n.states in
@@ -203,12 +204,14 @@ let emit_numberer opts oc n =
   pf "int\n";
   pf "%sopn(int op, int l, int r)\n" opts.pfx;
   pf "{\n";
-  cases |> List.iter (gen_tables oc tmp opts.pfx nst);
+  cases |> List.iter
+    (gen_tables opts.oc tmp opts.pfx nst);
   if List.exists (fun (_, c) -> c.swap) cases then
     pf "\tint t;\n\n";
-  if all_swap then emit_swap oc 1;
+  if all_swap then emit_swap opts.oc 1;
   pf "\tswitch (op) {\n";
-  cases |> List.iter (emit_case oc opts.pfx all_swap);
+  cases |> List.iter
+    (emit_case opts.oc opts.pfx all_swap);
   pf "\tdefault:\n";
   pf "\t\treturn %d;\n" tmp;
   pf "\t}\n";
@@ -283,4 +286,114 @@ let emit_numberer opts oc n =
   pf "\tdefault:\n";
   pf "\t\tdie(\"constant or temporary expected\");\n";
   pf "\t}\n";
-  pf "}\n"
+  pf "}\n\n";
+  (* match[]: patterns per state *)
+  if opts.static then pf "static ";
+  pf "bits %smatch[%d] = {\n" opts.pfx nst;
+  n.states |> Array.iteri (fun sn s ->
+      let tops =
+        List.filter_map (function
+          | Top r -> Some ("BIT(P" ^ r ^ ")")
+          | _ -> None) s.point |> setify
+      in
+      if tops <> [] then
+        pf "\t[%02d] = %s,\n"
+          sn (String.concat " | " tops);
+    );
+  pf "};\n\n"
+
+type struct_desc =
+  { name: string
+  ; fields: string array }
+
+let field_id sd f = 
+  match
+    Array.to_seqi sd.fields |>
+    Seq.find (fun (_, f') -> f' = f)
+  with
+  | Some (i, _) -> i
+  | None -> assert false
+
+let compile_action sd act =
+  let pcs = Hashtbl.create 100 in
+  let rec gen pc (act: Action.t) =
+    try
+      [10 + Hashtbl.find pcs act.id]
+    with Not_found ->
+      let code =
+        match act.node with
+        | Action.Stop ->
+            [0]
+        | Action.Push (sym, k) ->
+            let c = if sym then 1 else 2 in
+            [c] @ gen (pc + 1) k
+        | Action.Pop k ->
+            [3] @ gen (pc + 1) k
+        | Action.Set (v, {node = Action.Pop k; _})
+        | Action.Set (v, ({node = Action.Stop; _} as k)) ->
+            let f = field_id sd v in
+            [4; f] @ gen (pc + 2) k
+        | Action.Set _ ->
+            (* for now, only atomic patterns can be
+             * tied to a variable, so Set must be
+             * followed by either Pop or Stop *)
+            assert false
+        | Action.Switch cases ->
+            let cases = 
+              inverse cases |> group_by_fst |>
+              List.sort (fun (_, cs1) (_, cs2) ->
+                  let n1 = List.length cs1
+                  and n2 = List.length cs2 in
+                  compare n2 n1)
+            in
+            (* the last case is the one with
+             * the max number of entries *)
+            let cases = List.rev (List.tl cases)
+            and last = fst (List.hd cases) in
+            let ncases =
+              List.fold_left (fun n (_, cs) ->
+                  List.length cs + n)
+                0 cases
+            in
+            let body_off = 2 + 2 * ncases + 1 in
+            let pc, tbl, body =
+              List.fold_left
+                (fun (pc, tbl, body) (a, cs) ->
+                   let ofs = body_off + List.length body in
+                   let case = gen pc a in
+                   let pc = pc + List.length case in
+                   let body = body @ case in
+                   let tbl =
+                     List.fold_left (fun tbl c ->
+                         tbl @ [c; ofs]
+                       ) tbl cs
+                   in
+                   (pc, tbl, body))
+                (pc + body_off, [], [])
+                cases
+            in
+            let tbl = tbl @ [List.length body] in
+            [5; ncases] @ tbl @ body @ gen pc last
+      in
+      if act.node <> Action.Stop then
+        Hashtbl.replace pcs act.id pc;
+      code
+  in
+  gen 0 act
+
+let emit_matchers opts ms =
+  let pf m = Printf.fprintf opts.oc m in
+  if opts.static then pf "static ";
+  pf "uchar *%smatcher[] = {\n" opts.pfx;
+  List.iter (fun (sd, pname, m) ->
+      pf "\t[P%s] = (uchar[]){\n" pname;
+      pf "\t\t";
+      let bytes = compile_action sd m in
+      pf "%s" (List.map string_of_int bytes |> String.concat ",");
+      pf "\n";
+      pf "\t},\n")
+    ms;
+  pf "}\n\n"
+
+let emit_c opts n =
+  emit_numberer opts n

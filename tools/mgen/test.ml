@@ -69,27 +69,27 @@ let rules =
   | `X64Addr ->
     (* o + b *)
     rule "ob" (Bnr (oa, Atm Tmp, Atm AnyCon))
-    @ (* b + s * i *)
-    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 2L), vs)))
+    @ (* b + s * m *)
+    rule "bsm" (Bnr (oa, vb, Bnr (om, Var ("m", Con 2L), vs)))
     @ 
-    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 4L), vs)))
+    rule "bsm" (Bnr (oa, vb, Bnr (om, Var ("m", Con 4L), vs)))
     @ 
-    rule "bs" (Bnr (oa, vb, Bnr (om, Var ("m", Con 8L), vs)))
+    rule "bsm" (Bnr (oa, vb, Bnr (om, Var ("m", Con 8L), vs)))
     @  (* b + s *)
     rule "bs1" (Bnr (oa, vb, vs))
-    @ (* o + s * i *)
-    (* rule "os" (Bnr (oa, Atm AnyCon, Bnr (om, Atm (Con 4L), Atm Tmp))) *) []
-    @ (* b + o + s *)
-    rule "bos1" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb), vs))
-    @ (* b + o + s * i *)
-    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
-                         Bnr (om, Var ("m", Con 2L), vs)))
+    @ (* o + s * m *)
+    (* rule "osm" (Bnr (oa, Atm AnyCon, Bnr (om, Atm (Con 4L), Atm Tmp))) *) []
+    @ (* o + b + s *)
+    rule "obs1" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb), vs))
+    @ (* o + b + s * m *)
+    rule "obsm" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
+                          Bnr (om, Var ("m", Con 2L), vs)))
     @
-    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
-                         Bnr (om, Var ("m", Con 4L), vs)))
+    rule "obsm" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
+                          Bnr (om, Var ("m", Con 4L), vs)))
     @
-    rule "bos" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
-                         Bnr (om, Var ("m", Con 8L), vs)))
+    rule "obsm" (Bnr (oa, Bnr (oa, Var ("o", AnyCon), vb),
+                          Bnr (om, Var ("m", Con 8L), vs)))
   (* ------------------------------- *)
   | `Add3 ->
     [ { name = "add"
@@ -106,12 +106,21 @@ let () =
     sa
 let () = print_sm sm; flush stdout
 
-let matcher = lr_matcher sm sa rules "bos" (* XXX *)
+let matcher = lr_matcher sm sa rules "obsm" (* XXX *)
 let () = Format.printf "@[<v>%a@]@." Action.pp matcher
 let () = Format.printf "@[matcher size: %d@]@." (Action.size matcher)
 
 let numbr = make_numberer sa am sm
-let () = emit_numberer {pfx = ""; static = true} stdout numbr
+let () =
+  let opts = { pfx = ""
+             ; static = true
+             ; oc = stdout } in
+  emit_c opts numbr;
+  emit_matchers opts 
+    [ ( { name = ""; fields = [|"b"; "o"; "s"; "m"|] }
+      , "obsm"
+      , matcher ) ]
+
 (*
 let tp = fuzz_numberer rules numbr
 let () = test_matchers tp numbr rules

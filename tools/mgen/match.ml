@@ -543,8 +543,6 @@ let lr_matcher statemap states rules name =
     in
     let id_ops = List.concat_map snd id_ops in
     try
-      let gen_then ids pats f k =
-        f (gen ids pats k) in
       if bin_pats = [] then raise Stuck else
       let binop_id = id in
       let ids = List.map fst id_ops
@@ -554,8 +552,8 @@ let lr_matcher statemap states rules name =
                 (pl, (o, x, pr))
             | _ -> assert false) bin_pats
       in
-      gen_then ids pats (Action.mk_push ~sym)
-        @@ fun id pats ->
+      Action.mk_push ~sym @@ gen ids pats
+      @@ fun id pats ->
       let ids =
         List.filter_map (fun (l, r) ->
             if l = id then Some r else None) id_ops
@@ -563,8 +561,8 @@ let lr_matcher statemap states rules name =
         List.map (fun (pl, (o, x, pr)) ->
             (pr, (o, pl, x))) pats
       in
-      gen_then ids pats Action.mk_pop
-        @@ fun _rhs_id pats ->
+      Action.mk_pop @@ gen ids pats
+      @@ fun _rhs_id pats ->
       k binop_id
         (List.map (fun (pr, (o, pl, x)) ->
              (Bnr (o, pl, pr), x)) pats)
