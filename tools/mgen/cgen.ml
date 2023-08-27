@@ -84,20 +84,19 @@ let cgen_case tmp nstates map =
 let show_op (_cls, op) =
   "O" ^ show_op_base op
 
+let indent oc i =
+  Printf.fprintf oc "%s" (String.sub "\t\t\t\t\t" 0 i)
+
 let emit_swap oc i =
   let pf m = Printf.fprintf oc m in
-  let indent n =
-    pf "%s" (String.sub "\t\t\t\t" 0 n) in
-  let pfi n m = indent n; pf m in
+  let pfi n m = indent oc n; pf m in
   pfi i "if (l < r)\n";
   pfi (i+1) "t = l, l = r, r = t;\n"
 
 let gen_tables oc tmp pfx nstates (op, c) =
   let i = 1 in
   let pf m = Printf.fprintf oc m in
-  let indent n =
-    pf "%s" (String.sub "\t\t\t\t" 0 n) in
-  let pfi n m = indent n; pf m in
+  let pfi n m = indent oc n; pf m in
   let ntables = ref 0 in
   (* should mimic the order in which
    * we visit code in emit_case; or
@@ -142,9 +141,7 @@ let gen_tables oc tmp pfx nstates (op, c) =
 let emit_case oc pfx no_swap (op, c) =
   let fpf = Printf.fprintf in
   let pf m = fpf oc m in
-  let indent n =
-    pf "%s" (String.sub "\t\t\t\t" 0 n) in
-  let pfi n m = indent n; pf m in
+  let pfi n m = indent oc n; pf m in
   let rec side oc = function
     | L -> fpf oc "l"
     | R -> fpf oc "r"
@@ -186,6 +183,52 @@ let emit_case oc pfx no_swap (op, c) =
   if not no_swap && c.swap then
     emit_swap oc 2;
   code 2 c.code
+
+let emit_list
+    ?(limit=60) ?(cut_before_sep=false)
+    ~col ~indent:i ~sep ~f oc l =
+  let sl = String.length sep in
+  let rstripped_sep, rssl =
+    if sep.[sl - 1] = ' ' then
+      String.sub sep 0 (sl - 1), sl - 1
+    else sep, sl
+  in
+  let lstripped_sep, lssl =
+    if sep.[0] = ' ' then
+      String.sub sep 1 (sl - 1), sl - 1
+    else sep, sl
+  in
+  let rec line col acc = function
+    | [] -> (List.rev acc, [])
+    | s :: l -> 
+        let col = col + sl + String.length s in
+        let no_space =
+          if cut_before_sep || l = [] then
+            col > limit
+          else
+            col + rssl > limit
+        in
+        if no_space then
+          (List.rev acc, s :: l)
+        else
+          line col (s :: acc) l
+  in
+  let rec go col l =
+    if l = [] then () else
+    let ll, l = line col [] l in
+    Printf.fprintf oc "%s" (String.concat sep ll);
+    if l <> [] && cut_before_sep then begin
+      Printf.fprintf oc "\n";
+      indent oc i;
+      Printf.fprintf oc "%s" lstripped_sep;
+      go (8*i + lssl) l
+    end else if l <> [] then begin
+      Printf.fprintf oc "%s\n" rstripped_sep;
+      indent oc i;
+      go (8*i) l
+    end else ()
+  in
+  go col (List.map f l)
 
 let emit_numberer opts n =
   let pf m = Printf.fprintf opts.oc m in
@@ -254,30 +297,11 @@ let emit_numberer opts n =
     pf "\t\tn = con[r.val].bits.i;\n";
     cons |> inverse |> group_by_fst
     |> List.iter (fun (id, cs) ->
-        let wid = ref 20 in
-        let fst = ref true in
         pf "\t\tif (";
-        cs |> List.iter (fun c ->
-            let w =
-              (if !fst then 0 else 4) + 5 +
-              (if c < 0L then 1 else 0) +
-              (if c = 0L then 1 else
-               Float.(
-                 Int64.to_float c |> abs
-                 |> log10 |> ceil |> to_int))
-            in
-            if !wid + w > 60 then begin
-              pf "\n\t\t";
-              wid := 15;
-            end;
-            if not !fst then begin
-              if !wid <> 15 then pf " ";
-              pf "|| ";
-            end;
-            pf "n == %Ld" c;
-            wid := !wid + w;
-            fst := false;
-          );
+        emit_list ~cut_before_sep:true
+          ~col:20 ~indent:2 ~sep:" || "
+          ~f:(fun c -> "n == " ^ Int64.to_string c)
+          opts.oc cs;
         pf ")\n";
         pf "\t\t\treturn %d;\n" id
       );
@@ -302,19 +326,11 @@ let emit_numberer opts n =
     );
   pf "};\n\n"
 
-type struct_desc =
-  { name: string
-  ; fields: string array }
+let var_id vars f = 
+  List.mapi (fun i x -> (x, i)) vars |>
+  List.assoc f
 
-let field_id sd f = 
-  match
-    Array.to_seqi sd.fields |>
-    Seq.find (fun (_, f') -> f' = f)
-  with
-  | Some (i, _) -> i
-  | None -> assert false
-
-let compile_action sd act =
+let compile_action vars act =
   let pcs = Hashtbl.create 100 in
   let rec gen pc (act: Action.t) =
     try
@@ -331,8 +347,8 @@ let compile_action sd act =
             [3] @ gen (pc + 1) k
         | Action.Set (v, {node = Action.Pop k; _})
         | Action.Set (v, ({node = Action.Stop; _} as k)) ->
-            let f = field_id sd v in
-            [4; f] @ gen (pc + 2) k
+            let v = var_id vars v in
+            [4; v] @ gen (pc + 2) k
         | Action.Set _ ->
             (* for now, only atomic patterns can be
              * tied to a variable, so Set must be
@@ -373,6 +389,7 @@ let compile_action sd act =
                 cases
             in
             let tbl = tbl @ [List.length body] in
+            assert (2 + List.length tbl = body_off);
             [5; ncases] @ tbl @ body @ gen pc last
       in
       if act.node <> Action.Stop then
@@ -385,15 +402,17 @@ let emit_matchers opts ms =
   let pf m = Printf.fprintf opts.oc m in
   if opts.static then pf "static ";
   pf "uchar *%smatcher[] = {\n" opts.pfx;
-  List.iter (fun (sd, pname, m) ->
+  List.iter (fun (vars, pname, m) ->
       pf "\t[P%s] = (uchar[]){\n" pname;
       pf "\t\t";
-      let bytes = compile_action sd m in
-      pf "%s" (List.map string_of_int bytes |> String.concat ",");
+      let bytes = compile_action vars m in
+      emit_list
+        ~col:16 ~indent:2 ~sep:","
+        ~f:string_of_int opts.oc bytes;
       pf "\n";
       pf "\t},\n")
     ms;
-  pf "}\n\n"
+  pf "};\n\n"
 
 let emit_c opts n =
   emit_numberer opts n

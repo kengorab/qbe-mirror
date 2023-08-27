@@ -117,7 +117,7 @@ let () =
              ; oc = stdout } in
   emit_c opts numbr;
   emit_matchers opts 
-    [ ( { name = ""; fields = [|"b"; "o"; "s"; "m"|] }
+    [ ( ["b"; "o"; "s"; "m"]
       , "obsm"
       , matcher ) ]
 
