@@ -493,6 +493,17 @@ end = struct
   and pp fmt a = pp_node fmt a.node
 end
 
+(* a state is commutative if (a op b) enters
+ * it iff (b op a) enters it as well *)
+let symmetric rmap id =
+  List.for_all (fun (_, l) ->
+      let l1, l2 =
+        List.filter (fun (a, b) -> a <> b) l |>
+        List.partition (fun (a, b) -> a < b)
+      in
+      setify l1 = setify (inverse l2))
+    rmap.(id)
+
 (* left-to-right matching of a set of patterns;
  * may raise if there is no lr matcher for the
  * input rule *)
@@ -501,18 +512,9 @@ let lr_matcher statemap states rules name =
     let nstates = Array.length states in
     StateMap.invert nstates statemap
   in
-  (* a state is commutative if (a op b) enters
-   * it iff (b op a) enters it as well *)
-  let symmetric id =
-    List.for_all (fun (_, l) ->
-        let l1, l2 =
-          List.filter (fun (a, b) -> a <> b) l |>
-          List.partition (fun (a, b) -> a < b)
-        in
-        setify l1 = setify (inverse l2))
-      rmap.(id)
-  in
   let exception Stuck in
+  let ( let* ) a b = a b in
+  let compose f g = fun x -> f (g x) in
   (* the list of ids represents a class of terms
    * whose root ends up being labelled with one
    * such id; the gen function generates a matcher
@@ -520,11 +522,11 @@ let lr_matcher statemap states rules name =
    * for the Var nodes of one pattern in pats *)
   let rec gen
   : 'a. int list -> (pattern * 'a) list
-        -> (int -> (pattern * 'a) list -> Action.t)
+        -> ((int * (pattern * 'a) list) -> Action.t)
         -> Action.t
   = fun ids pats k ->
-    Action.mk_switch (setify ids) @@ fun id ->
-    let sym = symmetric id in
+    let* id = Action.mk_switch (setify ids) in
+    let sym = symmetric rmap id in
     let id_ops =
       if sym then
         let ordered (a, b) = a <= b in
@@ -544,28 +546,32 @@ let lr_matcher statemap states rules name =
     let id_ops = List.concat_map snd id_ops in
     try
       if bin_pats = [] then raise Stuck else
-      let binop_id = id in
-      let ids = List.map fst id_ops
-      and pats =
-        List.map (function
-            | (Bnr (o, pl, pr), x) ->
-                (pl, (o, x, pr))
-            | _ -> assert false) bin_pats
+      (* match the left arm *)
+      let* lid, pats =
+        compose (Action.mk_push ~sym)
+          (gen
+             (List.map fst id_ops)
+             (List.map (function
+                  | (Bnr (o, pl, pr), x) ->
+                      (pl, (o, x, pr))
+                  | _ -> assert false) bin_pats))
       in
-      Action.mk_push ~sym @@ gen ids pats
-      @@ fun id pats ->
-      let ids =
-        List.filter_map (fun (l, r) ->
-            if l = id then Some r else None) id_ops
-      and pats =
-        List.map (fun (pl, (o, x, pr)) ->
-            (pr, (o, pl, x))) pats
+      (* then the right arm, considering only the
+       * remaining possible patterns and knowing
+       * that the left arm was numbered 'lid' *)
+      let* _rid, pats =
+        compose Action.mk_pop
+          (gen
+             (List.filter_map (fun (l, r) ->
+                  if l = lid then Some r else None)
+                 id_ops)
+             (List.map (fun (pl, (o, x, pr)) ->
+                  (pr, (o, pl, x))) pats))
       in
-      Action.mk_pop @@ gen ids pats
-      @@ fun _rhs_id pats ->
-      k binop_id
-        (List.map (fun (pr, (o, pl, x)) ->
-             (Bnr (o, pl, pr), x)) pats)
+      (* continue matching the parent pattern *)
+      k ( id
+        , List.map (fun (pr, (o, pl, x)) ->
+              (Bnr (o, pl, pr), x)) pats )
     with Stuck ->
       let atm_pats =
         let seen = states.(id).seen in
@@ -579,8 +585,8 @@ let lr_matcher statemap states rules name =
             | _ -> None) atm_pats |> setify
       in
       match vars with
-      | [] -> k id atm_pats
-      | [v] -> Action.mk_set v (k id atm_pats)
+      | [] -> k (id, atm_pats)
+      | [v] -> Action.mk_set v (k (id, atm_pats))
       | _ -> failwith "ambiguous var match"
   in
   (* generate a matcher for the rule *)
@@ -607,7 +613,7 @@ let lr_matcher statemap states rules name =
     filter_dups |>
     List.map (fun p -> (p, ()))
   in
-  gen top_ids top_pats (fun _ pats ->
+  gen top_ids top_pats (fun (_, pats) ->
       assert (pats <> []);
       Action.stop)
 
