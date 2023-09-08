@@ -513,8 +513,6 @@ let lr_matcher statemap states rules name =
     StateMap.invert nstates statemap
   in
   let exception Stuck in
-  let ( let* ) a b = a b in
-  let compose f g = fun x -> f (g x) in
   (* the list of ids represents a class of terms
    * whose root ends up being labelled with one
    * such id; the gen function generates a matcher
@@ -522,75 +520,79 @@ let lr_matcher statemap states rules name =
    * for the Var nodes of one pattern in pats *)
   let rec gen
   : 'a. int list -> (pattern * 'a) list
-        -> ((int * (pattern * 'a) list) -> Action.t)
+        -> (int -> (pattern * 'a) list -> Action.t)
         -> Action.t
   = fun ids pats k ->
-    let* id = Action.mk_switch (setify ids) in
-    let sym = symmetric rmap id in
-    let id_ops =
-      if sym then
-        let ordered (a, b) = a <= b in
-        List.map (fun (o, l) ->
-            (o, List.filter ordered l)) rmap.(id)
-      else rmap.(id)
-    in
-    (* consider only the patterns that are
-     * compatible with the current id *)
-    let atm_pats, bin_pats =
-      List.filter (function
-        | Bnr (o, _, _), _ ->
-            List.exists (fun (o', _) -> o' = o) id_ops
-        | _ -> true) pats |>
-      List.partition (fun (pat, _) -> is_atomic pat)
-    in
-    let id_ops = List.concat_map snd id_ops in
-    try
-      if bin_pats = [] then raise Stuck else
-      (* match the left arm *)
-      let* lid, pats =
-        compose (Action.mk_push ~sym)
-          (gen
-             (List.map fst id_ops)
-             (List.map (function
-                  | (Bnr (o, pl, pr), x) ->
-                      (pl, (o, x, pr))
-                  | _ -> assert false) bin_pats))
-      in
-      (* then the right arm, considering only the
-       * remaining possible patterns and knowing
-       * that the left arm was numbered 'lid' *)
-      let* _rid, pats =
-        compose Action.mk_pop
-          (gen
-             (List.filter_map (fun (l, r) ->
-                  if l = lid then Some r else None)
-                 id_ops)
-             (List.map (fun (pl, (o, x, pr)) ->
-                  (pr, (o, pl, x))) pats))
-      in
-      (* continue matching the parent pattern *)
-      k ( id
-        , List.map (fun (pr, (o, pl, x)) ->
-              (Bnr (o, pl, pr), x)) pats )
-    with Stuck ->
-      let atm_pats =
-        let seen = states.(id).seen in
-        List.filter (fun (pat, _) ->
-            pattern_match pat seen) atm_pats
-      in
-      if atm_pats = [] then raise Stuck else
-      let vars =
-        List.filter_map (function
-            | (Var (v, _), _) -> Some v
-            | _ -> None) atm_pats |> setify
-      in
-      match vars with
-      | [] -> k (id, atm_pats)
-      | [v] -> Action.mk_set v (k (id, atm_pats))
-      | _ -> failwith "ambiguous var match"
+    Action.mk_switch (setify ids)
+      (fun id_top ->
+         let sym = symmetric rmap id_top in
+         let id_ops =
+           if sym then
+             let ordered (a, b) = a <= b in
+             List.map (fun (o, l) ->
+                 (o, List.filter ordered l))
+               rmap.(id_top)
+           else rmap.(id_top)
+         in
+         (* consider only the patterns that are
+          * compatible with the current id *)
+         let atm_pats, bin_pats =
+           List.filter (function
+               | Bnr (o, _, _), _ ->
+                   List.exists (fun (o', _) -> o' = o) id_ops
+               | _ -> true) pats |>
+           List.partition (fun (pat, _) -> is_atomic pat)
+         in
+         try
+           if bin_pats = [] then raise Stuck;
+           let pats_left =
+             List.map (function
+                 | (Bnr (o, l, r), x) -> (l, (o, x, r))
+                 | _ -> assert false)
+               bin_pats
+           and pats_right =
+             List.map (fun (l, (o, x, r)) -> (r, (o, l, x)))
+           and pats_top =
+             List.map (fun (r, (o, l, x)) -> (Bnr (o, l, r), x))
+           in
+           let id_pairs = List.concat_map snd id_ops in
+           let ids_left = List.map fst id_pairs
+           and ids_right id_left =
+             List.filter_map (fun (l, r) ->
+                 if l = id_left then Some r else None)
+               id_pairs
+           in
+           (* match the left arm *)
+           Action.mk_push ~sym
+             (gen ids_left pats_left
+                (fun lid pats ->
+                   (* then the right arm, considering only the
+                    * remaining possible patterns and knowing
+                    * that the left arm was numbered 'lid' *)
+                   Action.mk_pop
+                     (gen (ids_right lid) (pats_right pats)
+                        (fun _rid pats ->
+                           (* continue matching the parent *)
+                           k id_top (pats_top pats)))))
+         with Stuck ->
+           let atm_pats =
+             let seen = states.(id_top).seen in
+             List.filter (fun (pat, _) ->
+                 pattern_match pat seen) atm_pats
+           in
+           if atm_pats = [] then raise Stuck else
+           let vars =
+             List.filter_map (function
+                 | (Var (v, _), _) -> Some v
+                 | _ -> None) atm_pats |> setify
+           in
+           match vars with
+           | [] -> k id_top atm_pats
+           | [v] -> Action.mk_set v (k id_top atm_pats)
+           | _ -> failwith "ambiguous var match")
   in
   (* generate a matcher for the rule *)
-  let top_ids =
+  let ids_top =
     Array.to_list states |>
     List.filter_map (fun {id; point = p; _} ->
         if List.exists ((=) (Top name)) p then
@@ -605,7 +607,7 @@ let lr_matcher statemap states rules name =
         else p :: filter_dups pats
     | [] -> []
   in
-  let top_pats =
+  let pats_top =
     List.filter_map (fun r ->
         if r.name = name then
           Some r.pattern
@@ -613,7 +615,7 @@ let lr_matcher statemap states rules name =
     filter_dups |>
     List.map (fun p -> (p, ()))
   in
-  gen top_ids top_pats (fun (_, pats) ->
+  gen ids_top pats_top (fun _ pats ->
       assert (pats <> []);
       Action.stop)
 
