@@ -182,7 +182,7 @@ let rec pattern_depth = function
   | Atm _ -> 0
   | Var (_, atm) -> pattern_depth (Atm atm)
 
-let (%) a b =
+let ( %% ) a b =
   1e2 *. float_of_int a /. float_of_int b
 
 let progress ?(width = 50) msg pct =
@@ -192,8 +192,8 @@ let progress ?(width = 50) msg pct =
       let fwidth = float_of_int width in
       1 + int_of_float (pct *. fwidth /. 1e2)
     in
-    Format.fprintf fmt "  [%s%s] %.0f%%@?"
-      (String.make n ':')
+    Format.fprintf fmt "  %s%s %.0f%%@?"
+      (String.concat "" (List.init n (fun _ -> "▒")))
       (String.make (max 0 (width - n)) '-')
       pct
   in
@@ -213,11 +213,11 @@ let fuzz_numberer rules numbr =
    * is no longer growing fast enough; or we just
    * went through sufficiently many iterations *)
   let max_iter = 1_000_000 in
-  let low_new_rate = 1e-2 in
+  let low_insert_rate = 1e-2 in
   let tp = TermPool.create numbr in
   let rec loop new_stats i =
-    let (_, _, new_rate) = new_stats in
-    if new_rate <= low_new_rate then () else
+    let (_, _, insert_rate) = new_stats in
+    if insert_rate <= low_insert_rate then () else
     if i >= max_iter then () else
     (* periodically update stats *)
     let new_stats =
@@ -226,8 +226,8 @@ let fuzz_numberer rules numbr =
         let rate =
           0.5 *. (rate +. float_of_int cnt /. 1023.)
         in
-        progress "fuzzing... r=%.1f%%"
-          (i % max_iter) (rate *. 1e2);
+        progress "fuzzing... insert_rate=%.1f%%"
+          (i %% max_iter) (rate *. 1e2);
         (num + 1, 0, rate)
       else new_stats
     in
@@ -279,7 +279,8 @@ let fuzz_numberer rules numbr =
       loop new_stats (i + 1)
   in
   loop (1, 0, 1.0) 0;
-  Format.printf "@[ [%.3fMiB]@]@."
+  Format.printf
+    "@.@[  generated %.3fMiB worth of terms@]@."
     (float_of_int (Obj.reachable_words (Obj.repr tp))
      /.  128. /. 1024.);
   tp
@@ -354,9 +355,9 @@ let test_matchers tp numbr rules =
     if id land 1023 = 0 ||
        id = TermPool.size tp - 1 then begin
       progress
-        "testing... np=%d t=%.1f%%"
-        (id % TermPool.size tp) !total
-        (Hashtbl.length seen % !total)
+        "testing... npattern=%d coverage=%.1f%%"
+        (id %% TermPool.size tp) !total
+        (Hashtbl.length seen %% !total)
     end;
     let t = TermPool.explode_term tp id in
     Hashtbl.find_all matchers

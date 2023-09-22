@@ -30,6 +30,10 @@ let pfail error: 'a parser =
   let fn ps _ = raise (ParseError {error; ps})
   in { fn }
 
+(* handy for recursive rules *)
+let papp: ('a -> 'b parser) -> 'a -> 'b parser =
+  fun pf x -> let fn ps k = (pf x).fn ps k in { fn }
+
 let por: 'a parser -> 'a parser -> 'a parser =
   fun p1 p2 ->
   let fn ps k =
@@ -81,15 +85,16 @@ let pre: ?what:string -> string -> string parser =
     k (Str.matched_string ps.data) ps
   in { fn }
 
-let peof: unit parser =
+let peoi: unit parser =
   let fn ps k =
     if ps.indx <> String.length ps.data then
       raise (ParseError
-               { error = "expected end of stream"; ps });
+               { error = "expected end of input"; ps });
     k () ps
   in { fn }
 
 let pws = pre "[ \r\n\t]*"
+let pws1 = pre "[ \r\n\t]+"
 
 let pthen p1 p2 =
   let* x1 = p1 in
@@ -129,8 +134,9 @@ let run p s =
   with ParseError e ->
     let rec bol i =
       if i = 0 then i else
-      if s.[i] = '\n' then i+1 else
-      bol (i-1)
+      if i < String.length s && s.[i] = '\n'
+      then i+1
+      else bol (i-1)
     in
     let rec eol i =
       if i = String.length s then i else
@@ -162,7 +168,106 @@ let run p s =
       , String.concat "" (List.rev !msg) )
         
 
-(* ---------------------------------------------------------------------- *)
-(* pattern parsing                                                        *)
+(* ---------------------------------------- *)
+(* pattern parsing                          *)
+(* ---------------------------------------- *)
+(* Example syntax:
 
+   (with-vars (a b c d)
+     (patterns
+       (ob   (add (tmp a) (con d)))
+       (bsm  (add (tmp b) (mul (tmp m) (con 2 4 8)))) ))
+ *)
+open Match
 
+let pint64 =
+  let* s = pre "[-]?[0-9_]+" in
+  pret (Int64.of_string s)
+
+let pvar =
+  pre ~what:"a variable"
+    "[a-zA-Z][a-zA-Z0-9_]*"
+
+let pop_base =
+  let sob, obs = show_op_base, op_bases in
+  let* s = pre ~what:"an operator"
+      (String.concat "\\|" (List.map sob obs))
+  in pret (List.find (fun o -> s = sob o) obs)
+
+let pop = let* ob = pop_base in pret (Kl, ob)
+
+let rec ppat () =
+  let ppat = papp ppat () in
+  let pcons_tail =
+    let* cs = plist_tail (pws1 |>> pint64) in
+    match cs with
+    | [] -> pret [AnyCon]
+    | _ -> pret (List.map (fun c -> Con c) cs)
+  in
+  pws |>> (
+    ( let* c = pint64 in pret [Atm (Con c)] )
+    |||
+    ( pre "(con)" |>> pret [Atm AnyCon] ) |||
+    ( let* cs = pre "(con" |>> pcons_tail in
+      pret (List.map (fun c -> Atm c) cs) ) |||
+    ( let* v = pre "(con" |>> pws1 |>> pvar in
+      let* cs = pcons_tail in
+      pret (List.map (fun c -> Var (v, c)) cs) )
+    |||
+    ( pre "(tmp)" |>> pret [Atm Tmp] ) |||
+    ( let* v = pre "(tmp" |>> pws1 |>> pvar in
+      pws |>> pre ")" |>> pret [Var (v, Tmp)] )
+    |||
+    ( let* ((op, rand), rands) =
+        plist2 (pws |>> pop) ppat ppat in
+      let nrands = List.length rands in
+      if nrands <> 1 && not (associative op) then
+        pfail ( "only associative ops may have"
+              ^ " more than two arguments" )
+      else
+        (* construct a left-heavy tree *)
+        let rec left acc = function
+          | [] -> acc
+          | x :: xs ->
+              left (Bnr (op, acc, x)) xs
+        in
+        let pats =
+          products (rand :: rands) []
+            (fun rands pats ->
+               match rands with
+               | [] -> assert false
+               | x :: xs ->
+                   left x xs :: pats)
+        in pret pats )
+  )
+
+(* ---------------------------------------- *)
+(* tests                                    *)
+let () =
+  if false then
+  let show_patterns ps =
+    "[" ^ String.concat "; "
+      (List.map show_pattern ps) ^ "]"
+  in
+  let go s =
+    Printf.printf "parse %s = " s;
+    match run (ppat ()) s with
+    | `Ok p ->
+        Printf.printf "%s\n" (show_patterns p)
+    | `Error (_, e, _) ->
+        Printf.printf "ERROR: %s\n" e
+  in
+  go "42";
+  go "(tmp)";
+  go "(tmp foobar)";
+  go "(con)";
+  go "(con 1 2 3)";
+  go "(con x 1 2 3)";
+  go "(add 1 2)";
+  go "(add 1 2 3 4)";
+  go "(sub 1 2)";
+  go "(sub 1 2 3)";
+  go "(add 1 (add 2 3))";
+  go "(add (tmp a) (con d))";
+  go "(add (tmp b) (mul (tmp m) (con s 2 4 8)))";
+  go "(add (con 1 2) (con 3 4))"

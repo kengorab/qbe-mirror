@@ -7,7 +7,7 @@ SRC = \
 	test.ml
 
 $(BIN): $(SRC)
-	ocamlopt -o $(BIN) str.cmxa $(SRC)
+	ocamlopt -o $(BIN) -g str.cmxa $(SRC)
 
 clean:
 	rm -f *.cm? *.o $(BIN)
