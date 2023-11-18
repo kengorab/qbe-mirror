@@ -4,7 +4,8 @@ SRC = \
 	fuzz.ml \
 	cgen.ml \
 	sexp.ml \
-	test.ml
+	test.ml \
+	main.ml
 
 $(BIN): $(SRC)
 	ocamlopt -o $(BIN) -g str.cmxa $(SRC)

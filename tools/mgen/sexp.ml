@@ -30,10 +30,6 @@ let pfail error: 'a parser =
   let fn ps _ = raise (ParseError {error; ps})
   in { fn }
 
-(* handy for recursive rules *)
-let papp: ('a -> 'b parser) -> 'a -> 'b parser =
-  fun pf x -> let fn ps k = (pf x).fn ps k in { fn }
-
 let por: 'a parser -> 'a parser -> 'a parser =
   fun p1 p2 ->
   let fn ps k =
@@ -50,6 +46,9 @@ let pbind: 'a parser -> ('a -> 'b parser) -> 'b parser =
   let fn ps k =
     p1.fn ps (fun x ps -> (p2 x).fn ps k)
   in { fn }
+
+(* handy for recursive rules *)
+let papp p x = pbind (pret x) p
 
 let psnd: 'a parser -> 'b parser -> 'b parser =
   fun p1 p2 -> pbind p1 (fun _x -> p2)
@@ -112,22 +111,15 @@ let plist pitem =
   pws |>> pre ~what:"a list" "("
   |>> plist_tail pitem
 
-let plist1 p1 pitem =
+let plist1p p1 pitem =
   pws |>> pre ~what:"a list" "("
   |>> pthen p1 (plist_tail pitem)
 
-let plist2 p1 p2 pitem =
-  plist1 (pthen p1 p2) pitem
+let ppair p1 p2 =
+  pws |>> pre ~what:"a pair" "("
+  |>> pthen p1 p2 |<< pws |<< pre ")"
 
-let plist3 p1 p2 p3 pitem =
-  plist1 (pthen (pthen p1 p2) p3) pitem
-
-let pkeyword kw =
-  (* kw must not contain regex syntax *)
-  let what = "keyword '" ^ kw ^ "'" in
-  pws |>> pre ~what kw |>> pret ()
-
-let run p s =
+let run_parser p s =
   let ps =
     {data = s; line = 1; coln = 0; indx = 0} in
   try `Ok (p.fn ps (fun res _ps -> res))
@@ -135,7 +127,7 @@ let run p s =
     let rec bol i =
       if i = 0 then i else
       if i < String.length s && s.[i] = '\n'
-      then i+1
+      then i+1 (* XXX BUG *)
       else bol (i-1)
     in
     let rec eol i =
@@ -145,6 +137,8 @@ let run p s =
     in
     let bol = bol e.ps.indx in
     let eol = eol e.ps.indx in
+    Printf.eprintf "bol:%d eol:%d indx:%d len:%d\n"
+      bol eol e.ps.indx (String.length s);                 (* XXX debug *)
     let lines =
       String.split_on_char '\n'
         (String.sub s bol (eol - bol))
@@ -152,13 +146,14 @@ let run p s =
     let nl = List.length lines in
     let caret = ref (e.ps.indx - bol) in
     let msg = ref [] in
+    let pfx = "    > " in
     lines |> List.iteri (fun ln l ->
         if ln <> nl - 1 || l <> "" then begin
           let ll = String.length l + 1 in
-          msg := (l ^ "\n") :: !msg;
+          msg := (pfx ^ l ^ "\n") :: !msg;
           if !caret <= ll then begin
             let pad = String.make !caret ' ' in
-            msg := (pad ^ "^\n") :: !msg;
+            msg := (pfx ^ pad ^ "^\n") :: !msg;
           end;
           caret := !caret - ll;
         end;
@@ -184,8 +179,8 @@ let pint64 =
   let* s = pre "[-]?[0-9_]+" in
   pret (Int64.of_string s)
 
-let pvar =
-  pre ~what:"a variable"
+let pid =
+  pre ~what:"an identifer"
     "[a-zA-Z][a-zA-Z0-9_]*"
 
 let pop_base =
@@ -196,13 +191,19 @@ let pop_base =
 
 let pop = let* ob = pop_base in pret (Kl, ob)
 
-let rec ppat () =
-  let ppat = papp ppat () in
+let rec ppat vs =
   let pcons_tail =
     let* cs = plist_tail (pws1 |>> pint64) in
     match cs with
     | [] -> pret [AnyCon]
     | _ -> pret (List.map (fun c -> Con c) cs)
+  in
+  let pvar =
+    let* id = pid in
+    if not (List.mem id vs) then
+      pfail ("unbound variable: " ^ id)
+    else
+      pret id
   in
   pws |>> (
     ( let* c = pint64 in pret [Atm (Con c)] )
@@ -218,56 +219,73 @@ let rec ppat () =
     ( let* v = pre "(tmp" |>> pws1 |>> pvar in
       pws |>> pre ")" |>> pret [Var (v, Tmp)] )
     |||
-    ( let* ((op, rand), rands) =
-        plist2 (pws |>> pop) ppat ppat in
+    ( let* (op, rands) =
+        plist1p (pws |>> pop) (papp ppat vs) in
       let nrands = List.length rands in
-      if nrands <> 1 && not (associative op) then
-        pfail ( "only associative ops may have"
-              ^ " more than two arguments" )
+      if nrands < 2 then
+        pfail ( "binary op requires at least"
+              ^ " two arguments" )
       else
-        (* construct a left-heavy tree *)
-        let rec left acc = function
-          | [] -> acc
-          | x :: xs ->
-              left (Bnr (op, acc, x)) xs
-        in
-        let pats =
-          products (rand :: rands) []
-            (fun rands pats ->
-               match rands with
-               | [] -> assert false
-               | x :: xs ->
-                   left x xs :: pats)
-        in pret pats )
+        let mk x y = Bnr (op, x, y) in
+        pret
+          (products rands []
+             (fun rands pats ->
+                (* construct a left-heavy tree *)
+                let r0 = List.hd rands in
+                let rs = List.tl rands in
+                List.fold_left mk r0 rs :: pats)) )
   )
+
+let pwith_vars ?(vs = []) p =
+  ( let* vs =
+      pre "(with-vars" |>> pws |>>
+      plist (pws |>> pid)
+    in pws |>> p vs |<< pws |<< pre ")" )
+  ||| p vs
+
+let ppats =
+  pwith_vars @@ fun vs -> pre "(patterns" |>>
+  plist_tail (pwith_vars ~vs @@ fun vs ->
+              let* n, ps = ppair pid (ppat vs) in
+              pret (n, vs, ps))
+
 
 (* ---------------------------------------- *)
 (* tests                                    *)
+(* ---------------------------------------- *)
+
 let () =
   if false then
   let show_patterns ps =
     "[" ^ String.concat "; "
       (List.map show_pattern ps) ^ "]"
   in
-  let go s =
+  let pat s =
     Printf.printf "parse %s = " s;
-    match run (ppat ()) s with
+    let vars =
+      [ "foobar"; "a"; "b"; "d"
+      ; "m"; "s"; "x" ]
+    in
+    match run_parser (ppat vars) s with
     | `Ok p ->
         Printf.printf "%s\n" (show_patterns p)
     | `Error (_, e, _) ->
         Printf.printf "ERROR: %s\n" e
   in
-  go "42";
-  go "(tmp)";
-  go "(tmp foobar)";
-  go "(con)";
-  go "(con 1 2 3)";
-  go "(con x 1 2 3)";
-  go "(add 1 2)";
-  go "(add 1 2 3 4)";
-  go "(sub 1 2)";
-  go "(sub 1 2 3)";
-  go "(add 1 (add 2 3))";
-  go "(add (tmp a) (con d))";
-  go "(add (tmp b) (mul (tmp m) (con s 2 4 8)))";
-  go "(add (con 1 2) (con 3 4))"
+  pat "42";
+  pat "(tmp)";
+  pat "(tmp foobar)";
+  pat "(con)";
+  pat "(con 1 2 3)";
+  pat "(con x 1 2 3)";
+  pat "(add 1 2)";
+  pat "(add 1 2 3 4)";
+  pat "(sub 1 2)";
+  pat "(sub 1 2 3)";
+  pat "(tmp unbound_var)";
+  pat "(add 0)";
+  pat "(add 1 (add 2 3))";
+  pat "(add (tmp a) (con d))";
+  pat "(add (tmp b) (mul (tmp m) (con s 2 4 8)))";
+  pat "(add (con 1 2) (con 3 4))";
+  ()

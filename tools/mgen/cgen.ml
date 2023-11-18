@@ -98,9 +98,9 @@ let gen_tables oc tmp pfx nstates (op, c) =
   let pf m = Printf.fprintf oc m in
   let pfi n m = indent oc n; pf m in
   let ntables = ref 0 in
-  (* should mimic the order in which
-   * we visit code in emit_case; or
-   * else ntables is out of sync *)
+  (* we must follow the order in which
+   * we visit code in emit_case, or
+   * else ntables goes out of sync *)
   let base = pfx ^ show_op op in
   let swap = c.swap in
   let rec gen c =

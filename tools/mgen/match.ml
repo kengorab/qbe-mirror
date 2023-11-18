@@ -261,6 +261,7 @@ end
 
 type rule =
   { name: string
+  ; vars: string list
   ; pattern: pattern }
 
 let generate_table rl =

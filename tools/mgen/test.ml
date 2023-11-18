@@ -48,7 +48,7 @@ let print_sm =
             | _ -> top) "" s'.point
         in
         Printf.printf
-          "(%s %d %d) -> %d%s\n"
+          "  (%s %d %d) -> %d%s\n"
           (show_op o)
           sl.id sr.id s'.id top)
 
@@ -59,9 +59,10 @@ let rules =
   and vb = Var ("b", Tmp)
   and vc = Var ("c", Tmp)
   and vs = Var ("s", Tmp) in
+  let vars = ["a"; "b"; "c"; "s"] in
   let rule name pattern =
     List.map
-      (fun pattern -> {name; pattern})
+      (fun pattern -> {name; vars; pattern})
       (ac_equiv pattern)
   in
   match `X64Addr with
@@ -93,8 +94,10 @@ let rules =
   (* ------------------------------- *)
   | `Add3 ->
     [ { name = "add"
+      ; vars = []
       ; pattern = Bnr (oa, va, Bnr (oa, vb, vc)) } ] @
     [ { name = "add"
+      ; vars = []
       ; pattern = Bnr (oa, Bnr (oa, va, vb), vc) } ]
 
 
