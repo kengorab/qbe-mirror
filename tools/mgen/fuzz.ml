@@ -52,14 +52,14 @@ type term =
   ; state: p state }
 
 let pp_term fmt (ta, id) =
-  let open Format in
-  let rec pp fmt id =
+  let fpf x = Format.fprintf fmt x in
+  let rec pp _fmt id =
     match ta.(id).data with
-    | Leaf (Con c) -> printf "%Ld" c
-    | Leaf AnyCon -> printf "$%d" id
-    | Leaf Tmp -> printf "%%%d" id
+    | Leaf (Con c) -> fpf "%Ld" c
+    | Leaf AnyCon -> fpf "$%d" id
+    | Leaf Tmp -> fpf "%%%d" id
     | Binop (op, id1, id2) ->
-        printf "@[(%s@%d:%d @[<hov>%a@ %a@])@]"
+        fpf "@[(%s@%d:%d @[<hov>%a@ %a@])@]"
           (show_op op) id ta.(id).state.id
           pp id1 pp id2
   in pp fmt id
@@ -254,13 +254,13 @@ let fuzz_numberer rules numbr =
         let pp_sep fmt () = fprintf fmt ",@ " in
         pp_print_list ~pp_sep pp_print_string
       in
-      printf "@.@[<v2>fuzz error for %s"
+      eprintf "@.@[<v2>fuzz error for %s"
         (show_pattern term);
-      printf "@ @[state matched: %a@]"
+      eprintf "@ @[state matched: %a@]"
         pp_str_list state_matched;
-      printf "@ @[rule matched: %a@]"
+      eprintf "@ @[rule matched: %a@]"
         pp_str_list rule_matched;
-      printf "@]@.";
+      eprintf "@]@.";
       raise FuzzError;
     end;
     if state_matched = [] then
@@ -387,26 +387,26 @@ let test_matchers tp numbr rules =
             fmt asn;
           fprintf fmt "@]"
         in
-        printf "@.@[<v2>matcher error for";
-        printf "@ @[%a@]" pp_term t;
+        eprintf "@.@[<v2>matcher error for";
+        eprintf "@ @[%a@]" pp_term t;
         begin match ok with
         | `RunFailure e ->
-            printf "@ @[exception: %s@]"
+            eprintf "@ @[exception: %s@]"
               (Printexc.to_string e)
         | `Match (* false *) _ ->
             let asn = run_matcher [] m t in
-            printf "@ @[assignment: %a@]"
+            eprintf "@ @[assignment: %a@]"
               pp_asn asn;
-            printf "@ @[<v2>could not match";
+            eprintf "@ @[<v2>could not match";
             List.iter (fun p ->
-                printf "@ + @[%s@]"
+                eprintf "@ + @[%s@]"
                   (show_pattern p)) ps;
-            printf "@]"
+            eprintf "@]"
         end;
-        printf "@]@.";
+        eprintf "@]@.";
         raise FuzzError
       end)
   done;
-  Format.printf "@."
+  Format.eprintf "@."
 
 

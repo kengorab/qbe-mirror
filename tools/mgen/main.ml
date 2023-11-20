@@ -77,7 +77,7 @@ let mgen ~verbose ~fuzz path input =
     Fuzz.test_matchers tp numbr rules
   end;
 
-  info "emitting C...\n\n";
+  info "emitting C...\n";
   flush stderr;
 
   let cgopts =
