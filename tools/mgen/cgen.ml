@@ -90,8 +90,11 @@ let indent oc i =
 let emit_swap oc i =
   let pf m = Printf.fprintf oc m in
   let pfi n m = indent oc n; pf m in
-  pfi i "if (l < r)\n";
-  pfi (i+1) "t = l, l = r, r = t;\n"
+  pfi i "if (l < r) {\n";
+  pfi (i+1) "t = l;\n";
+  pfi (i+1) "l = r;\n";
+  pfi (i+1) "r = t;\n";
+  pfi i "}\n"
 
 let gen_tables oc tmp pfx nstates (op, c) =
   let i = 1 in

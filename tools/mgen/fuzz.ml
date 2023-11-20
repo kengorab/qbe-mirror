@@ -186,7 +186,7 @@ let ( %% ) a b =
   1e2 *. float_of_int a /. float_of_int b
 
 let progress ?(width = 50) msg pct =
-  Format.printf "\x1b[2K\r%!";
+  Format.eprintf "\x1b[2K\r%!";
   let progress_bar fmt =
     let n =
       let fwidth = float_of_int width in
@@ -198,7 +198,7 @@ let progress ?(width = 50) msg pct =
       pct
   in
   Format.kfprintf progress_bar
-    Format.std_formatter msg
+    Format.err_formatter msg
 
 let fuzz_numberer rules numbr =
   (* pick twice the max pattern depth so we
@@ -226,7 +226,7 @@ let fuzz_numberer rules numbr =
         let rate =
           0.5 *. (rate +. float_of_int cnt /. 1023.)
         in
-        progress "fuzzing... insert_rate=%.1f%%"
+        progress "  insert_rate=%.1f%%"
           (i %% max_iter) (rate *. 1e2);
         (num + 1, 0, rate)
       else new_stats
@@ -279,8 +279,8 @@ let fuzz_numberer rules numbr =
       loop new_stats (i + 1)
   in
   loop (1, 0, 1.0) 0;
-  Format.printf
-    "@.@[  generated %.3fMiB worth of terms@]@."
+  Format.eprintf
+    "@.@[  generated %.3fMiB of test terms@]@."
     (float_of_int (Obj.reachable_words (Obj.repr tp))
      /.  128. /. 1024.);
   tp
@@ -355,8 +355,8 @@ let test_matchers tp numbr rules =
     if id land 1023 = 0 ||
        id = TermPool.size tp - 1 then begin
       progress
-        "testing... npattern=%d coverage=%.1f%%"
-        (id %% TermPool.size tp) !total
+        "  coverage=%.1f%%"
+        (id %% TermPool.size tp)
         (Hashtbl.length seen %% !total)
     end;
     let t = TermPool.explode_term tp id in

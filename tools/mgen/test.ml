@@ -37,7 +37,7 @@ let test_fold_pairs =
 
 (* test pattern & state *)
 
-let print_sm =
+let print_sm oc =
   StateMap.iter (fun k s' ->
     match k with
     | K (o, sl, sr) ->
@@ -47,7 +47,7 @@ let print_sm =
             | Top r -> top ^ " " ^ r
             | _ -> top) "" s'.point
         in
-        Printf.printf
+        Printf.fprintf oc
           "  (%s %d %d) -> %d%s\n"
           (show_op o)
           sl.id sr.id s'.id top)
@@ -109,7 +109,7 @@ let () =
       Format.printf "@[state %d: %s@]@."
         i (show_pattern s.seen))
     sa
-let () = print_sm sm; flush stdout
+let () = print_sm stdout sm; flush stdout
 
 let matcher = lr_matcher sm sa rules "obsm" (* XXX *)
 let () = Format.printf "@[<v>%a@]@." Action.pp matcher
