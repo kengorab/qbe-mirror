@@ -244,11 +244,11 @@ let pwith_vars ?(vs = []) p =
   ||| p vs
 
 let ppats =
-  pwith_vars @@ fun vs -> pre "(patterns" |>>
-  plist_tail (pwith_vars ~vs @@ fun vs ->
-              let* n, ps = ppair pid (ppat vs) in
-              pret (n, vs, ps))
-
+  pws |>> pwith_vars @@ fun vs ->
+  pre "(patterns" |>> plist_tail
+    (pwith_vars ~vs @@ fun vs ->
+       let* n, ps = ppair pid (ppat vs) in
+       pret (n, vs, ps))
 
 (* ---------------------------------------- *)
 (* tests                                    *)

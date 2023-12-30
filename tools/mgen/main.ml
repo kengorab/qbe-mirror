@@ -37,7 +37,7 @@ let mgen ~verbose ~fuzz path input =
     nparsed (List.length rules);
 
   let rnames =
-    List.map (fun r -> r.name) rules |> setify in
+    setify (List.map (fun r -> r.name) rules) in
 
   info "generating match tables...%!";
   let sa, am, sm = generate_table rules in
@@ -47,7 +47,7 @@ let mgen ~verbose ~fuzz path input =
   if verbose >= 2 then begin
     info "-------------\nstates:\n";
     Array.iteri (fun i s ->
-        info ~level:2 "  state %d: %s\n"
+        info "  state %d: %s\n"
           i (show_pattern s.seen)) sa;
     info "-------------\nstatemap:\n";
     Test.print_sm stderr sm;
@@ -100,7 +100,9 @@ let read_all ic =
   Buffer.contents data
 
 let () =
-  let usage_msg = "mgen [--fuzz] <file>" in
+  let usage_msg =
+    "mgen [--fuzz] [--verbose <N>] <file>" in
+
   let fuzz_arg = ref false in
   let verbose_arg = ref 0 in
   let input_paths = ref [] in
@@ -109,10 +111,15 @@ let () =
     input_paths := filename :: !input_paths in
 
   let speclist =
-    [ ("--fuzz", Arg.Set fuzz_arg, " fuzz tables and matchers")
-    ; ("--verbose", Arg.Set_int verbose_arg, " ") ]
+    [ ( "--fuzz", Arg.Set fuzz_arg
+      , "  Fuzz tables and matchers" )
+    ; ( "--verbose", Arg.Set_int verbose_arg
+      , "<N>  Set verbosity level" )
+    ; ( "--", Arg.Rest_all (List.iter anon_fun)
+      , "  Stop argument parsing" ) ]
   in
   Arg.parse speclist anon_fun usage_msg;
+
   let input_paths = !input_paths in
   let verbose = !verbose_arg in
   let fuzz = !fuzz_arg in
@@ -120,7 +127,11 @@ let () =
     match input_paths with
     | ["-"] -> ("-", read_all stdin)
     | [path] -> (path, read_all (open_in path))
-    | _ -> Arg.usage speclist usage_msg; exit 1
+    | _ ->
+        Printf.eprintf
+          "%s: single input file expected\n"
+          Sys.argv.(0);
+        Arg.usage speclist usage_msg; exit 1
   in
 
   mgen ~verbose ~fuzz input_path input;

@@ -100,7 +100,6 @@ let rules =
       ; vars = []
       ; pattern = Bnr (oa, Bnr (oa, va, vb), vc) } ]
 
-
 (*
 
 let sa, am, sm = generate_table rules
@@ -116,7 +115,7 @@ let () = Format.printf "@[<v>%a@]@." Action.pp matcher
 let () = Format.printf "@[matcher size: %d@]@." (Action.size matcher)
 
 let numbr = make_numberer sa am sm
-(*
+
 let () =
   let opts = { pfx = ""
              ; static = true
@@ -126,9 +125,10 @@ let () =
     [ ( ["b"; "o"; "s"; "m"]
       , "obsm"
       , matcher ) ]
-*)
 
+(* 
 let tp = fuzz_numberer rules numbr
 let () = test_matchers tp numbr rules
+*)
 
 *)
