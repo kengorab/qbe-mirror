@@ -190,6 +190,14 @@ elf_emitfin(FILE *f)
 }
 
 void
+win_emitfin(FILE *f)
+{
+	static char *sec[3] = { ".rodata", ".rodata", ".rodata" };
+
+	emitfin(f ,sec);
+}
+
+void
 elf_emitfnfin(char *fn, FILE *f)
 {
 	fprintf(f, ".type %s, @function\n", fn);

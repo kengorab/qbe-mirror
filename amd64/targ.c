@@ -19,13 +19,9 @@ amd64_memargs(int op)
 	.nfpr = NFPR, \
 	.rglob = BIT(RBP) | BIT(RSP), \
 	.nrglob = 2, \
-	.rsave = amd64_sysv_rsave, \
 	.nrsave = {NGPS, NFPS}, \
-	.retregs = amd64_sysv_retregs, \
-	.argregs = amd64_sysv_argregs, \
 	.memargs = amd64_memargs, \
 	.abi0 = elimsb, \
-	.abi1 = amd64_sysv_abi, \
 	.isel = amd64_isel, \
 	.emitfn = amd64_emitfn, \
 
@@ -33,6 +29,10 @@ Target T_amd64_sysv = {
 	.name = "amd64_sysv",
 	.emitfin = elf_emitfin,
 	.asloc = ".L",
+	.abi1 = amd64_sysv_abi,
+	.retregs = amd64_sysv_retregs,
+	.argregs = amd64_sysv_argregs,
+	.rsave = amd64_sysv_rsave,
 	AMD64_COMMON
 };
 
@@ -42,5 +42,21 @@ Target T_amd64_apple = {
 	.emitfin = macho_emitfin,
 	.asloc = "L",
 	.assym = "_",
+	.abi1 = amd64_sysv_abi,
+	.retregs = amd64_sysv_retregs,
+	.argregs = amd64_sysv_argregs,
+	.rsave = amd64_sysv_rsave,
+	AMD64_COMMON
+};
+
+Target T_amd64_win = {
+	.name = "amd64_win",
+	.windows = 1,
+	.emitfin = win_emitfin,
+	.asloc = ".L",
+	.abi1 = amd64_winabi_abi,
+	.retregs = amd64_winabi_retregs,
+	.argregs = amd64_winabi_argregs,
+	.rsave = amd64_winabi_rsave,
 	AMD64_COMMON
 };

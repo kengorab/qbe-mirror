@@ -651,6 +651,6 @@ amd64_emitfn(Fn *fn, FILE *f)
 		}
 	}
 	id0 += fn->nblk;
-	if (!T.apple)
+	if (!T.apple && !T.windows)
 		elf_emitfnfin(fn->name, f);
 }

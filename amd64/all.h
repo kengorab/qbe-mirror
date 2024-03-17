@@ -63,6 +63,13 @@ bits amd64_sysv_retregs(Ref, int[2]);
 bits amd64_sysv_argregs(Ref, int[2]);
 void amd64_sysv_abi(Fn *);
 
+/* winabi.c (abi) */
+extern int amd64_winabi_rsave[];
+extern int amd64_winabi_rclob[];
+bits amd64_winabi_retregs(Ref, int[2]);
+bits amd64_winabi_argregs(Ref, int[2]);
+void amd64_winabi_abi(Fn *);
+
 /* isel.c */
 void amd64_isel(Fn *);
 
