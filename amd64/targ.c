@@ -19,7 +19,6 @@ amd64_memargs(int op)
 	.nfpr = NFPR, \
 	.rglob = BIT(RBP) | BIT(RSP), \
 	.nrglob = 2, \
-	.nrsave = {NGPS, NFPS}, \
 	.memargs = amd64_memargs, \
 	.abi0 = elimsb, \
 	.isel = amd64_isel, \
@@ -33,6 +32,7 @@ Target T_amd64_sysv = {
 	.retregs = amd64_sysv_retregs,
 	.argregs = amd64_sysv_argregs,
 	.rsave = amd64_sysv_rsave,
+	.nrsave = {NGPS, NFPS},
 	AMD64_COMMON
 };
 
@@ -46,6 +46,7 @@ Target T_amd64_apple = {
 	.retregs = amd64_sysv_retregs,
 	.argregs = amd64_sysv_argregs,
 	.rsave = amd64_sysv_rsave,
+	.nrsave = {NGPS, NFPS},
 	AMD64_COMMON
 };
 
@@ -58,5 +59,6 @@ Target T_amd64_win = {
 	.retregs = amd64_winabi_retregs,
 	.argregs = amd64_winabi_argregs,
 	.rsave = amd64_winabi_rsave,
+	.nrsave = {NGPS - 2, XMM3 - XMM0 + 1},
 	AMD64_COMMON
 };

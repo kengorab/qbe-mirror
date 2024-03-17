@@ -92,26 +92,21 @@ typclass(AClass *a, Typ *t)
 }
 
 static int
-retr(Ref reg[2], AClass *aret)
+retr(Ref *reg, AClass *aret)
 {
-	static int retreg[2][2] = {{RAX, RDX}, {XMM0, XMM0+1}};
-	int n, k, ca, nr[2];
+	int k;
 
-	nr[0] = nr[1] = 0;
-	ca = 0;
-	for (n=0; (uint)n*8<aret->size; n++) {
-		k = KBASE(aret->cls[n]);
-		reg[n] = TMP(retreg[k][nr[k]++]);
-		ca += 1 << (2 * k);
-	}
-	return ca;
+	assert(aret->size <= 8);
+	k = KBASE(aret->cls[0]);
+	*reg = (k == 0 ? TMP(RAX) : TMP(XMM0));
+	return 1 << (2 * k);
 }
 
 static void
 selret(Blk *b, Fn *fn)
 {
 	int j, k, ca;
-	Ref r, r0, reg[2];
+	Ref r0, reg;
 	AClass aret;
 
 	j = b->jmp.type;
@@ -131,13 +126,9 @@ selret(Blk *b, Fn *fn)
 			emit(Oblit0, 0, R, r0, fn->retr);
 			ca = 1;
 		} else {
-			ca = retr(reg, &aret);
-			if (aret.size > 8) {
-				r = newtmp("abi", Kl, fn);
-				emit(Oload, Kl, reg[1], r, R);
-				emit(Oadd, Kl, r, r0, getcon(8, fn));
-			}
-			emit(Oload, Kl, reg[0], r0, R);
+			ca = retr(&reg, &aret);
+			assert(aret.size <= 8);
+			emit(Oload, Kl, reg, r0, R);
 		}
 	} else {
 		k = j - Jretw;
@@ -161,9 +152,9 @@ argsclass(Ins *i0, Ins *i1, AClass *ac, int op, AClass *aret, Ref *env)
 	Ins *i;
 
 	if (aret && aret->inmem)
-		nint = 5; /* hidden argument */
+		nint = 3; /* hidden argument */
 	else
-		nint = 6;
+		nint = 4;
 	nsse = 8;
 	varc = 0;
 	envc = 0;
@@ -215,15 +206,22 @@ argsclass(Ins *i0, Ins *i1, AClass *ac, int op, AClass *aret, Ref *env)
 		}
 
 	if (varc && envc)
-		err("winabi does not support variadic env calls");
+		err("winabi abi does not support variadic env calls");
 
-	return ((varc|envc) << 12) | ((6-nint) << 4) | ((8-nsse) << 8);
+	return ((varc|envc) << 12) | ((4-nint) << 4) | ((8-nsse) << 8);
 }
 
 int amd64_winabi_rsave[] = {
-	RCX, RDX, R8, R9, -1
+	RCX, RDX, R8, R9, R10, R11, RAX,
+	XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
+	XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, -1
 };
-int amd64_winabi_rclob[] = {RBX, R12, R13, R14, R15, -1};
+int amd64_winabi_rclob[] = {RBX, R12, R13, R14, R15, RSI, RDI, -1};
+
+MAKESURE(winabi_arrays_ok,
+	sizeof amd64_winabi_rsave == (NGPS+NFPS+1-2) * sizeof(int) &&
+	sizeof amd64_winabi_rclob == (NCLR+2+1) * sizeof(int)
+);
 
 bits
 amd64_winabi_retregs(Ref r, int p[2])
@@ -235,10 +233,12 @@ amd64_winabi_retregs(Ref r, int p[2])
 	b = 0;
 	ni = r.val & 3;
 	nf = (r.val >> 2) & 3;
+	assert(ni <= 1);
+	assert(nf <= 1);
 	if (ni == 1)
 		b |= BIT(RAX);
 	else
-		b |= BIT(XMM0);
+		b |= BIT(XMM1);
 	if (p) {
 		p[0] = ni;
 		p[1] = nf;
@@ -300,7 +300,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 	for (stk=0, a=&ac[i1-i0]; a>ac;)
 		if ((--a)->inmem) {
 			if (a->align > 4)
-				err("win abi requires alignments of 16 or less");
+				err("winabi abi requires alignments of 16 or less");
 			stk += a->size;
 			if (a->align == 4)
 				stk += stk & 15;
@@ -364,8 +364,7 @@ selcall(Fn *fn, Ins *i0, Ins *i1, RAlloc **rap)
 
 	ni = ns = 0;
 	if (ra && aret.inmem)
-		emit(Ocopy, Kl, rarg(Kl, &ni, &ns), ra->i.to, R); /* pass
-hidden argument */
+		emit(Ocopy, Kl, rarg(Kl, &ni, &ns), ra->i.to, R); /* pass hidden argument */
 
 	for (i=i0, a=ac; i<i1; i++, a++) {
 		if (i->op >= Oarge || a->inmem)
@@ -450,7 +449,7 @@ selpar(Fn *fn, Ins *i0, Ins *i1)
 		switch (a->inmem) {
 		case 1:
 			if (a->align > 4)
-				err("win abi requires alignments of 16 or less");
+				err("winabi abi requires alignments of 16 or less");
 			if (a->align == 4)
 				s = (s+3) & -4;
 			fn->tmp[i->to.val].slot = -s;

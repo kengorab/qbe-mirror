@@ -3,24 +3,26 @@
 typedef struct Amd64Op Amd64Op;
 
 enum Amd64Reg {
-	RAX = RXX+1, /* caller-save */
-	RCX,
-	RDX,
-	RSI,
-	RDI,
-	R8,
-	R9,
-	R10,
-	R11,
-
-	RBX, /* callee-save */
-	R12,
-	R13,
-	R14,
-	R15,
-
-	RBP, /* globally live */
-	RSP,
+	/* |Register    | SysV             | WinABI           | */
+	/* +------------+------------------+------------------+ */
+	RAX = RXX+1, /* | caller-save (v)  | caller-save (v)  | */
+	RCX,         /* | caller-save (v)  | caller-save (v)  | */
+	RDX,         /* | caller-save (v)  | caller-save (v)  | */
+	RSI,         /* | caller-save (v)  | callee-save (nv) | */
+	RDI,         /* | caller-save (v)  | callee-save (nv) | */
+	R8,          /* | caller-save (v)  | caller-save (v)  | */
+	R9,          /* | caller-save (v)  | caller-save (v)  | */
+	R10,         /* | caller-save (v)  | caller-save (v)  | */
+	R11,         /* | caller-save (v)  | caller-save (v)  | */
+	             /* +------------------+------------------+ */
+	RBX,         /* | callee-save (nv) | callee-save (nv) | */
+	R12,         /* | callee-save (nv) | callee-save (nv) | */
+	R13,         /* | callee-save (nv) | callee-save (nv) | */
+	R14,         /* | callee-save (nv) | callee-save (nv) | */
+	R15,         /* | callee-save (nv) | callee-save (nv) | */
+				 /* +------------------+------------------+ */
+	RBP,         /* | globally live    | callee-save (nv) | */
+	RSP,         /* | globally live    | callee-save (nv) | */
 
 	XMM0, /* sse */
 	XMM1,
