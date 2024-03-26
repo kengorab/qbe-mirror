@@ -26,8 +26,12 @@ let mgen ~verbose ~fuzz path input =
          npats + List.length ps)
       0 rules
   in
+  let varsmap = Hashtbl.create 10 in
   let rules =
     List.concat_map (fun (name, vars, patterns) ->
+        (try assert (Hashtbl.find varsmap name = vars)
+         with Not_found -> ());
+        Hashtbl.replace varsmap name vars;
         List.map
           (fun pattern -> {name; vars; pattern})
           (List.concat_map ac_equiv patterns)
@@ -59,13 +63,14 @@ let mgen ~verbose ~fuzz path input =
     List.map (fun rname ->
         info "+ %s...%!" rname;
         let m = lr_matcher sm sa rules rname in
+        let vars = Hashtbl.find varsmap rname in
         info " %d nodes\n" (Action.size m);
         info ~level:2 "  -------------\n";
         info ~level:2 "  automaton:\n";
         info ~level:2 "%s\n"
           (Format.asprintf "    @[%a@]" Action.pp m);
         info ~level:2 "  ----------\n";
-        (rname, m)
+        (vars, rname, m)
       ) rnames
   in
 
@@ -86,7 +91,7 @@ let mgen ~verbose ~fuzz path input =
     ; oc = stdout }
   in
   emit_c cgopts numbr;
-  (* emit_matchers cgopts *)
+  emit_matchers cgopts matchers;
 
   ()
 

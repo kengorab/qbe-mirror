@@ -238,13 +238,13 @@ let rec ppat vs =
 
 let pwith_vars ?(vs = []) p =
   ( let* vs =
-      pre "(with-vars" |>> pws |>>
+      pws |>> pre "(with-vars" |>> pws |>>
       plist (pws |>> pid)
     in pws |>> p vs |<< pws |<< pre ")" )
   ||| p vs
 
 let ppats =
-  pws |>> pwith_vars @@ fun vs ->
+  pwith_vars @@ fun vs ->
   pre "(patterns" |>> plist_tail
     (pwith_vars ~vs @@ fun vs ->
        let* n, ps = ppair pid (ppat vs) in
