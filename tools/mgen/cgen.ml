@@ -320,6 +320,7 @@ let emit_numberer opts n =
   n.states |> Array.iteri (fun sn s ->
       let tops =
         List.filter_map (function
+          | Top ("$" | "%") -> None
           | Top r -> Some ("BIT(P" ^ r ^ ")")
           | _ -> None) s.point |> setify
       in

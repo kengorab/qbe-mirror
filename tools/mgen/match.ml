@@ -266,16 +266,23 @@ type rule =
 
 let generate_table rl =
   let states = StateSet.create () in
+  let rl =
+    (* these atomic patterns must occur in
+     * rules so that we are able to number
+     * all possible refs *)
+    [ { name = "$"; vars = []
+      ; pattern = Atm AnyCon }
+    ; { name = "%"; vars = []
+      ; pattern = Atm Tmp } ] @ rl
+  in
   (* initialize states *)
   let ground =
     List.concat_map
       (fun r -> peel r.pattern r.name) rl |>
     group_by_fst
   in
-  let find x d l =
-    try List.assoc x l with Not_found -> d in
-  let tmp = find (Atm Tmp) [] ground in
-  let con = find (Atm AnyCon) [] ground in
+  let tmp = List.assoc (Atm Tmp) ground in
+  let con = List.assoc (Atm AnyCon) ground in
   let atoms = ref [] in
   let () =
     List.iter (fun (seen, l) ->
