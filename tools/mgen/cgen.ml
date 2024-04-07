@@ -125,7 +125,7 @@ let gen_tables oc tmp pfx nstates (op, c) =
           for r = 0 to nstates - 1 do
             if not swap || r <= l then
               begin
-                pf "%02d"
+                pf "%d"
                   (try List.assoc (l,r) map
                    with Not_found -> tmp);
                 pf ",";
@@ -311,7 +311,7 @@ let emit_numberer opts n =
   end;
   pf "\t\treturn %d;\n" con;
   pf "\tdefault:\n";
-  pf "\t\tdie(\"constant or temporary expected\");\n";
+  pf "\t\tdie(\"unreachable\");\n";
   pf "\t}\n";
   pf "}\n\n";
   (* match[]: patterns per state *)
