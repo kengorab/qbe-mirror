@@ -237,6 +237,7 @@ let fuzz_numberer rules numbr =
     let state_matched =
       List.filter_map (fun cu ->
           match cu with
+          | Top ("$" | "%") -> None
           | Top name -> Some name
           | _ -> None)
         st.point |> setify
