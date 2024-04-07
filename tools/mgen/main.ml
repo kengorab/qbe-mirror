@@ -1,7 +1,7 @@
 open Cgen
 open Match
 
-let mgen ~verbose ~fuzz path input =
+let mgen ~verbose ~fuzz path lofs input oc =
   let info ?(level = 1) fmt =
     if level <= verbose then
       Printf.eprintf fmt
@@ -13,7 +13,7 @@ let mgen ~verbose ~fuzz path input =
     match Sexp.(run_parser ppats) input with
     | `Error (ps, err, loc) ->
         Printf.eprintf "%s:%d:%d %s\n"
-          path ps.Sexp.line ps.Sexp.coln err;
+          path (lofs + ps.Sexp.line) ps.Sexp.coln err;
         Printf.eprintf "%s" loc;
         exit 1
     | `Ok rules -> rules
@@ -86,10 +86,7 @@ let mgen ~verbose ~fuzz path input =
   flush stderr;
 
   let cgopts =
-    { pfx = ""
-    ; static = true
-    ; oc = stdout }
-  in
+    { pfx = ""; static = true; oc = oc } in
   emit_c cgopts numbr;
   emit_matchers cgopts matchers;
 
@@ -99,10 +96,66 @@ let read_all ic =
   let bufsz = 4096 in
   let buf = Bytes.create bufsz in
   let data = Buffer.create bufsz in
-  while input ic buf 0 bufsz <> 0 do
-    Buffer.add_bytes data buf;
+  let read = ref 0 in
+  while
+    read := input ic buf 0 bufsz;
+    !read <> 0
+  do
+    Buffer.add_subbytes data buf 0 !read;
   done;
   Buffer.contents data
+
+let split_c src =
+  let begin_re, eoc_re, end_re =
+    let re = Str.regexp in
+    ( re "mgen generated section"
+    , re "\\*/"
+    , re "end of generated section" )
+  in
+  let str_match regexp str =
+    try
+      let _: int =
+        Str.search_forward regexp str 0
+      in true
+    with Not_found -> false
+  in
+
+  let rec go st pfx rules lines =
+    let line, lines =
+      match lines with
+      | [] ->
+          failwith (
+            match st with
+            | `Prefix -> "could not find mgen section"
+            | `Rules -> "mgen rules not terminated"
+            | `Skip -> "mgen section not terminated"
+          )
+      | l :: ls -> (l, ls)
+    in
+    match st with
+    | `Prefix ->
+        let pfx = line :: pfx in
+        if str_match begin_re line
+        then go `Rules pfx rules lines
+        else go `Prefix pfx rules lines
+    | `Rules ->
+        let pfx = line :: pfx in
+        if str_match eoc_re line
+        then go `Skip pfx rules lines
+        else go `Rules pfx (line :: rules) lines
+    | `Skip ->
+        if str_match end_re line then
+          let join = String.concat "\n" in
+          let lofs = List.length pfx
+          and pfx = join (List.rev pfx) ^ "\n\n"
+          and rules = join (List.rev rules)
+          and sfx = join (line :: lines)
+          in (lofs, pfx, rules, sfx)
+        else go `Skip pfx rules lines
+  in
+
+  let lines = String.split_on_char '\n' src in
+  go `Prefix [] [] lines
 
 let () =
   let usage_msg =
@@ -138,7 +191,18 @@ let () =
           Sys.argv.(0);
         Arg.usage speclist usage_msg; exit 1
   in
+  let mgen = mgen ~verbose ~fuzz in
 
-  mgen ~verbose ~fuzz input_path input;
+  if Str.last_chars input_path 2 <> ".c"
+  then mgen input_path 0 input stdout
+  else begin
+    let lofs, pfx, rules, sfx = split_c input in
+    let oc = open_out (input_path ^ ".tmp") in
+    output_string oc pfx;
+    mgen input_path lofs rules oc;
+    output_string oc sfx;
+    close_out oc;
+    ()
+  end;
 
   ()

@@ -92,8 +92,8 @@ let peoi: unit parser =
     k () ps
   in { fn }
 
-let pws = pre "[ \r\n\t]*"
-let pws1 = pre "[ \r\n\t]+"
+let pws = pre "[ \r\n\t*]*"
+let pws1 = pre "[ \r\n\t*]+"
 
 let pthen p1 p2 =
   let* x1 = p1 in
