@@ -116,9 +116,9 @@ let gen_tables oc tmp pfx nstates (op, c) =
         assert (nstates <= 256);
         if swap then
           let n = nstates * (nstates + 1) / 2 in
-          pfi i "static uchar %s[%d] = {\n" name n
+          pfi i "static uchar %stbl[%d] = {\n" name n
         else
-          pfi i "static uchar %s[%d][%d] = {\n"
+          pfi i "static uchar %stbl[%d][%d] = {\n"
             name nstates nstates;
         for l = 0 to nstates - 1 do
           pfi (i+1) "";
@@ -168,8 +168,8 @@ let emit_case oc pfx no_swap (op, c) =
         in
         incr ntables;
         if swap then
-          pfi i "return %s[(l + l*l)/2 + r];\n" name
-        else pfi i "return %s[l][r];\n" name
+          pfi i "return %stbl[(l + l*l)/2 + r];\n" name
+        else pfi i "return %stbl[l][r];\n" name
     | IfThen ({test = And (And (t1, t2), t3)} as r) ->
         code i @@ IfThen
           {r with test = And (t1, And (t2, t3))}
@@ -265,7 +265,7 @@ let emit_numberer opts n =
   (* refn() *)
   if opts.static then pf "static ";
   pf "int\n";
-  pf "%srefn(Ref r, TNum *tn, Con *con)\n" opts.pfx;
+  pf "%srefn(Ref r, Num *tn, Con *con)\n" opts.pfx;
   pf "{\n";
   let cons =
     List.filter_map (function
@@ -325,7 +325,7 @@ let emit_numberer opts n =
           | _ -> None) s.point |> setify
       in
       if tops <> [] then
-        pf "\t[%02d] = %s,\n"
+        pf "\t[%d] = %s,\n"
           sn (String.concat " | " tops);
     );
   pf "};\n\n"
@@ -347,17 +347,17 @@ let compile_action vars act =
         | Action.Push (sym, k) ->
             let c = if sym then 1 else 2 in
             [c] @ gen (pc + 1) k
-        | Action.Pop k ->
-            [3] @ gen (pc + 1) k
         | Action.Set (v, {node = Action.Pop k; _})
         | Action.Set (v, ({node = Action.Stop; _} as k)) ->
             let v = var_id vars v in
-            [4; v] @ gen (pc + 2) k
+            [3; v] @ gen (pc + 2) k
         | Action.Set _ ->
             (* for now, only atomic patterns can be
              * tied to a variable, so Set must be
              * followed by either Pop or Stop *)
             assert false
+        | Action.Pop k ->
+            [4] @ gen (pc + 1) k
         | Action.Switch cases ->
             let cases = 
               inverse cases |> group_by_fst |>
@@ -392,7 +392,8 @@ let compile_action vars act =
                 (pc + body_off, [], [])
                 cases
             in
-            let tbl = tbl @ [List.length body] in
+            let ofs = body_off + List.length body in
+            let tbl = tbl @ [ofs] in
             assert (2 + List.length tbl = body_off);
             [5; ncases] @ tbl @ body @ gen pc last
       in

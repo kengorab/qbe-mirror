@@ -137,8 +137,10 @@ let run_parser p s =
     in
     let bol = bol e.ps.indx in
     let eol = eol e.ps.indx in
+    (*
     Printf.eprintf "bol:%d eol:%d indx:%d len:%d\n"
       bol eol e.ps.indx (String.length s);                 (* XXX debug *)
+    *)
     let lines =
       String.split_on_char '\n'
         (String.sub s bol (eol - bol))
