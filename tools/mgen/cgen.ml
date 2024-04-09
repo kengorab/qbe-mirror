@@ -90,11 +90,8 @@ let indent oc i =
 let emit_swap oc i =
   let pf m = Printf.fprintf oc m in
   let pfi n m = indent oc n; pf m in
-  pfi i "if (l < r) {\n";
-  pfi (i+1) "t = l;\n";
-  pfi (i+1) "l = r;\n";
-  pfi (i+1) "r = t;\n";
-  pfi i "}\n"
+  pfi i "if (l < r)\n";
+  pfi (i+1) "t = l, l = r, r = t;\n"
 
 let gen_tables oc tmp pfx nstates (op, c) =
   let i = 1 in
@@ -311,7 +308,7 @@ let emit_numberer opts n =
   end;
   pf "\t\treturn %d;\n" con;
   pf "\tdefault:\n";
-  pf "\t\tdie(\"unreachable\");\n";
+  pf "\t\treturn INT_MIN;\n";
   pf "\t}\n";
   pf "}\n\n";
   (* match[]: patterns per state *)
