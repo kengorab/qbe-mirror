@@ -25,7 +25,8 @@ struct Slice {
 
 struct Insert {
 	uint isphi:1;
-	uint num:31;
+	uint dead:1;
+	uint num:30;
 	uint bid;
 	uint off;
 	union {
@@ -407,6 +408,123 @@ icmp(const void *pa, const void *pb)
 	return a->num - b->num;
 }
 
+static inline uint
+nmix(uint h, uint x0, uint x1)
+{
+	return x1 + 17*(x0 + 17*h);
+}
+
+static inline uint
+rmix(uint h, Ref r)
+{
+	return nmix(h, r.type, r.val);
+}
+
+static void
+rcpy(Ref *r, Ref *cpy)
+{
+	if (rtype(*r) == RTmp)
+		*r = cpy[r->val];
+}
+
+static uint
+ihash(Insert *ist, Ref *cpy)
+{
+	uint h, n;
+	Ins *i;
+	Phi *p;
+
+	if (!ist->isphi) {
+		i = &ist->new.ins;
+		h = nmix(0, i->cls, i->op);
+		rcpy(&i->arg[0], cpy);
+		h = rmix(h, i->arg[0]);
+		rcpy(&i->arg[1], cpy);
+		h = rmix(h, i->arg[1]);
+	} else {
+		p = ist->new.phi.p;
+		h = nmix(0, 1, p->cls);
+		for (n=0; n<p->narg; n++) {
+			rcpy(&p->arg[n], cpy);
+			h = rmix(h, p->arg[n]);
+		}
+	}
+	return h;
+
+}
+
+static int
+ieq(Insert *a, Insert *b)
+{
+	Ins *ia, *ib;
+	Phi *pa, *pb;
+	uint n;
+
+	if (a->isphi && b->isphi) {
+		pa = a->new.phi.p;
+		pb = b->new.phi.p;
+		if (pa->cls != pb->cls
+		|| pa->narg != pb->narg)
+			return 0;
+		for (n=0; n<pa->narg; n++)
+			if (!req(pa->arg[n], pb->arg[n]))
+				return 0;
+		return 1;
+	} else if (!a->isphi && !b->isphi) {
+		ia = &a->new.ins;
+		ib = &b->new.ins;
+		if (ia->cls == ib->cls)
+		if (ia->op == ib->op)
+		if (req(ia->arg[0], ib->arg[0]))
+		if (req(ia->arg[1], ib->arg[1]))
+			return 1;
+	}
+	return 0;
+}
+
+static Ref
+ito(Insert *ist)
+{
+	if (ist->isphi)
+		return ist->new.phi.p->to;
+	else
+		return ist->new.ins.to;
+}
+
+static void
+dedup(Fn *fn, Ref *cpy)
+{
+	enum {
+		N = 128,
+	};
+	Insert *htab[N];
+	Insert *ist, *ist0;
+	uint bid, off, h;
+	int n;
+
+	for (n=0; n<fn->ntmp; n++)
+		cpy[n] = TMP(n);
+	bid = 0;
+	off = 0;
+	for (ist=ilog; ist->bid<fn->nblk; ist++) {
+		if (ist->bid != bid || ist->off != off) {
+			memset(htab, 0, sizeof htab);
+			bid = ist->bid;
+			off = ist->off;
+		}
+		h = ihash(ist, cpy);
+		ist->num = h;
+		ist0 = htab[h&(N-1)];
+		if (ist0 && ist->num == ist0->num) {
+			if (ieq(ist, ist0)) {
+				cpy[ito(ist).val] = ito(ist0);
+				ist->dead = 1;
+			}
+		} else
+			htab[h&(N-1)] = ist;
+	}
+}
+
 /* require rpo ssa alias */
 void
 loadopt(Fn *fn)
@@ -418,6 +536,7 @@ loadopt(Fn *fn)
 	Insert *ist;
 	Slice sl;
 	Loc l;
+	Ref *cpy;
 
 	curf = fn;
 	ilog = vnew(0, sizeof ilog[0], PHeap);
@@ -435,24 +554,33 @@ loadopt(Fn *fn)
 	qsort(ilog, nlog, sizeof ilog[0], icmp);
 	vgrow(&ilog, nlog+1);
 	ilog[nlog].bid = fn->nblk; /* add a sentinel */
+	cpy = vnew(fn->ntmp, sizeof cpy[0], PHeap);
+	dedup(fn, cpy);
 	ib = vnew(0, sizeof(Ins), PHeap);
 	for (ist=ilog, n=0; n<fn->nblk; ++n) {
 		b = fn->rpo[n];
 		for (; ist->bid == n && ist->isphi; ++ist) {
+			if (ist->dead)
+				continue;
 			ist->new.phi.p->link = b->phi;
 			b->phi = ist->new.phi.p;
 		}
 		ni = 0;
 		nt = 0;
 		for (;;) {
-			if (ist->bid == n && ist->off == ni)
+			if (ist->bid == n && ist->off == ni) {
+				if (ist->dead) {
+					ist++;
+					continue;
+				}
 				i = &ist++->new.ins;
-			else {
+			} else {
 				if (ni == b->nins)
 					break;
 				i = &b->ins[ni++];
 				if (isload(i->op)
 				&& !req(i->arg[1], R)) {
+					rcpy(&i->arg[1], cpy);
 					ext = Oextsb + i->op - Oloadsb;
 					switch (i->op) {
 					default:
@@ -485,6 +613,7 @@ loadopt(Fn *fn)
 		idup(&b->ins, ib, nt);
 	}
 	vfree(ib);
+	vfree(cpy);
 	vfree(ilog);
 	if (debug['M']) {
 		fprintf(stderr, "\n> After load elimination:\n");
