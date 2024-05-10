@@ -409,44 +409,44 @@ icmp(const void *pa, const void *pb)
 }
 
 static inline uint
-nmix(uint h, uint x0, uint x1)
+mixi(uint h, uint x0, uint x1)
 {
 	return x1 + 17*(x0 + 17*h);
 }
 
 static inline uint
-rmix(uint h, Ref r)
+mixr(uint h, Ref r)
 {
-	return nmix(h, r.type, r.val);
+	return mixi(h, r.type, r.val);
 }
 
 static void
-rcpy(Ref *r, Ref *cpy)
+subst(Ref *r, int *cpy)
 {
 	if (rtype(*r) == RTmp)
-		*r = cpy[r->val];
+		r->val = cpy[r->val];
 }
 
 static uint
-ihash(Insert *ist, Ref *cpy)
+ihash(Insert *ist, int *cpy)
 {
-	uint h, n;
 	Ins *i;
 	Phi *p;
+	uint h, n;
 
 	if (!ist->isphi) {
 		i = &ist->new.ins;
-		h = nmix(0, i->cls, i->op);
-		rcpy(&i->arg[0], cpy);
-		h = rmix(h, i->arg[0]);
-		rcpy(&i->arg[1], cpy);
-		h = rmix(h, i->arg[1]);
+		h = mixi(0, i->cls, i->op);
+		subst(&i->arg[0], cpy);
+		h = mixr(h, i->arg[0]);
+		subst(&i->arg[1], cpy);
+		h = mixr(h, i->arg[1]);
 	} else {
 		p = ist->new.phi.p;
-		h = nmix(0, 1, p->cls);
+		h = mixi(0, 1, p->cls);
 		for (n=0; n<p->narg; n++) {
-			rcpy(&p->arg[n], cpy);
-			h = rmix(h, p->arg[n]);
+			subst(&p->arg[n], cpy);
+			h = mixr(h, p->arg[n]);
 		}
 	}
 	return h;
@@ -482,17 +482,17 @@ ieq(Insert *a, Insert *b)
 	return 0;
 }
 
-static Ref
-ito(Insert *ist)
+static int
+idef(Insert *ist)
 {
 	if (ist->isphi)
-		return ist->new.phi.p->to;
+		return ist->new.phi.p->to.val;
 	else
-		return ist->new.ins.to;
+		return ist->new.ins.to.val;
 }
 
 static void
-dedup(Fn *fn, Ref *cpy)
+cse(Fn *fn, int *cpy)
 {
 	enum {
 		N = 128,
@@ -500,10 +500,10 @@ dedup(Fn *fn, Ref *cpy)
 	Insert *htab[N];
 	Insert *ist, *ist0;
 	uint bid, off, h;
-	int n;
+	int t;
 
-	for (n=0; n<fn->ntmp; n++)
-		cpy[n] = TMP(n);
+	for (t=0; t<fn->ntmp; t++)
+		cpy[t] = t;
 	bid = 0;
 	off = 0;
 	for (ist=ilog; ist->bid<fn->nblk; ist++) {
@@ -514,14 +514,13 @@ dedup(Fn *fn, Ref *cpy)
 		}
 		h = ihash(ist, cpy);
 		ist->num = h;
-		ist0 = htab[h&(N-1)];
-		if (ist0 && ist->num == ist0->num) {
+		if (!(ist0 = htab[h & (N-1)]))
+			htab[h & (N-1)] = ist;
+		else if (ist0->num == h)
 			if (ieq(ist, ist0)) {
-				cpy[ito(ist).val] = ito(ist0);
+				cpy[idef(ist)] = idef(ist0);
 				ist->dead = 1;
 			}
-		} else
-			htab[h&(N-1)] = ist;
 	}
 }
 
@@ -531,12 +530,11 @@ loadopt(Fn *fn)
 {
 	Ins *i, *ib;
 	Blk *b;
-	int sz;
+	int *cpy, sz;
 	uint n, ni, ext, nt;
 	Insert *ist;
 	Slice sl;
 	Loc l;
-	Ref *cpy;
 
 	curf = fn;
 	ilog = vnew(0, sizeof ilog[0], PHeap);
@@ -555,7 +553,7 @@ loadopt(Fn *fn)
 	vgrow(&ilog, nlog+1);
 	ilog[nlog].bid = fn->nblk; /* add a sentinel */
 	cpy = vnew(fn->ntmp, sizeof cpy[0], PHeap);
-	dedup(fn, cpy);
+	cse(fn, cpy);
 	ib = vnew(0, sizeof(Ins), PHeap);
 	for (ist=ilog, n=0; n<fn->nblk; ++n) {
 		b = fn->rpo[n];
@@ -580,7 +578,7 @@ loadopt(Fn *fn)
 				i = &b->ins[ni++];
 				if (isload(i->op)
 				&& !req(i->arg[1], R)) {
-					rcpy(&i->arg[1], cpy);
+					subst(&i->arg[1], cpy);
 					ext = Oextsb + i->op - Oloadsb;
 					switch (i->op) {
 					default:
