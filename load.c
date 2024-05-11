@@ -423,8 +423,10 @@ mixr(uint h, Ref r)
 static void
 subst(Ref *r, int *cpy)
 {
-	if (rtype(*r) == RTmp)
-		r->val = cpy[r->val];
+	if (rtype(*r) == RTmp) {
+		r->val = cpy[r->val] >> 1;
+		cpy[r->val] |= 1;
+	}
 }
 
 static uint
@@ -491,6 +493,8 @@ idef(Insert *ist)
 		return ist->new.ins.to.val;
 }
 
+static uint nedit, ncyclic;
+
 static void
 cse(Fn *fn, int *cpy)
 {
@@ -503,7 +507,7 @@ cse(Fn *fn, int *cpy)
 	int t;
 
 	for (t=0; t<fn->ntmp; t++)
-		cpy[t] = t;
+		cpy[t] = t<<1;
 	bid = 0;
 	off = 0;
 	for (ist=ilog; ist->bid<fn->nblk; ist++) {
@@ -518,10 +522,30 @@ cse(Fn *fn, int *cpy)
 			htab[h & (N-1)] = ist;
 		else if (ist0->num == h)
 			if (ieq(ist, ist0)) {
-				cpy[idef(ist)] = idef(ist0);
-				ist->dead = 1;
+				if (!(cpy[idef(ist)] & 1)) {
+					cpy[idef(ist)] = idef(ist0)<<1;
+					ist->dead = 1;
+				} else
+					ncyclic += 1;
 			}
 	}
+}
+
+static void
+dumpstats(char *fname, uint ndead)
+{
+	extern char *curfile;
+	FILE *f;
+
+	f = fopen("/tmp/stats.json", "a");
+	fprintf(f,
+		"{ \"pass\": \"loadopt\", \"file\": \"%s\","
+		" \"function\": \"%s\", \"stats\": { "
+		"\"ndead\": %u, \"ncyclic\": %u, \"ninsert\": %u, "
+		"\"nedit\": %u } }\n",
+		curfile, fname, ndead, ncyclic, nlog - ndead, nedit
+	);
+	fclose(f);
 }
 
 /* require rpo ssa alias */
@@ -535,6 +559,7 @@ loadopt(Fn *fn)
 	Insert *ist;
 	Slice sl;
 	Loc l;
+	uint ndead;
 
 	curf = fn;
 	ilog = vnew(0, sizeof ilog[0], PHeap);
@@ -553,13 +578,18 @@ loadopt(Fn *fn)
 	vgrow(&ilog, nlog+1);
 	ilog[nlog].bid = fn->nblk; /* add a sentinel */
 	cpy = vnew(fn->ntmp, sizeof cpy[0], PHeap);
+	ncyclic = 0;
 	cse(fn, cpy);
 	ib = vnew(0, sizeof(Ins), PHeap);
+	ndead = 0;
+	nedit = 0;
 	for (ist=ilog, n=0; n<fn->nblk; ++n) {
 		b = fn->rpo[n];
 		for (; ist->bid == n && ist->isphi; ++ist) {
-			if (ist->dead)
+			if (ist->dead) {
+				ndead++;
 				continue;
+			}
 			ist->new.phi.p->link = b->phi;
 			b->phi = ist->new.phi.p;
 		}
@@ -568,6 +598,7 @@ loadopt(Fn *fn)
 		for (;;) {
 			if (ist->bid == n && ist->off == ni) {
 				if (ist->dead) {
+					ndead++;
 					ist++;
 					continue;
 				}
@@ -578,6 +609,7 @@ loadopt(Fn *fn)
 				i = &b->ins[ni++];
 				if (isload(i->op)
 				&& !req(i->arg[1], R)) {
+					nedit++;
 					subst(&i->arg[1], cpy);
 					ext = Oextsb + i->op - Oloadsb;
 					switch (i->op) {
@@ -617,4 +649,5 @@ loadopt(Fn *fn)
 		fprintf(stderr, "\n> After load elimination:\n");
 		printfn(fn, stderr);
 	}
+	dumpstats(fn->name, ndead);
 }

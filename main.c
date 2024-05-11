@@ -113,6 +113,8 @@ dbgfile(char *fn)
 	emitdbgfile(fn, outf);
 }
 
+char *curfile;
+
 int
 main(int ac, char *av[])
 {
@@ -187,6 +189,7 @@ main(int ac, char *av[])
 				exit(1);
 			}
 		}
+		curfile = f;
 		parse(inf, f, dbgfile, data, func);
 		fclose(inf);
 	} while (++optind < ac);
