@@ -60,7 +60,7 @@ static struct {
 	{ Ourem,   Ki, "udiv %?, %0, %1\n\tmsub\t%=, %?, %1, %0" },
 	{ Ocopy,   Ki, "mov %=, %0" },
 	{ Ocopy,   Ka, "fmov %=, %0" },
-	{ Oswap,   Ki, "mov %?, %0\n\tmov\t%0, %1\n\tmov\t%1, %?" },
+	{ Oswap,   Ki, "stp\t%0, %1, [sp, -16]!\n\tldp\t%1, %0, [sp], 16" },
 	{ Oswap,   Ka, "fmov %?, %0\n\tfmov\t%0, %1\n\tfmov\t%1, %?" },
 	{ Ostoreb, Kw, "strb %W0, %M1" },
 	{ Ostoreh, Kw, "strh %W0, %M1" },
