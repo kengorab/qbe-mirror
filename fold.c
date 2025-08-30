@@ -34,10 +34,12 @@ foldint(Con *res, int op, int w, Con *cl, Con *cr)
 		if (cl->type == CAddr) {
 			if (cr->type == CAddr)
 				return 1;
+			if (cr->bits.i < 0) return 1;
 			typ = CAddr;
 			sym = cl->sym;
 		}
 		else if (cr->type == CAddr) {
+			if (cl->bits.i < 0) return 1;
 			typ = CAddr;
 			sym = cr->sym;
 		}
@@ -45,10 +47,12 @@ foldint(Con *res, int op, int w, Con *cl, Con *cr)
 	else if (op == Osub) {
 		if (cl->type == CAddr) {
 			if (cr->type != CAddr) {
+				if (cr->bits.i < 0) return 1;
 				typ = CAddr;
 				sym = cl->sym;
 			} else if (!symeq(cl->sym, cr->sym))
 				return 1;
+			else if (cl->bits.i < 0) return 1;
 		}
 		else if (cr->type == CAddr)
 			return 1;
